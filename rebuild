@@ -1,0 +1,13 @@
+#!/bin/bash
+
+
+if [ -d Debug ]
+then
+	make -C Debug clean all 
+fi
+
+if [ -d Release ]
+then
+        make -C Release clean all
+fi
+

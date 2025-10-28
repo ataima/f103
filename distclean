@@ -1,0 +1,1 @@
+rm -rf Debug; rm -rf Release

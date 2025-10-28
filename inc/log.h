@@ -23,7 +23,6 @@
 #ifndef LOG_H_
 #define LOG_H_
 
-#include "common.h"
 
 /* =============================================================================
  * CODICI DI RITORNO
@@ -36,6 +35,8 @@
 #define LOG_ERROR_INVALID       -4      /* Parametro invalido */
 #define LOG_ERROR_TRUNCATED     -5      /* Messaggio troncato per lunghezza eccessiva */
 
+
+#define ENABLE_LOG 1
 
 #if ENABLE_LOG
 
@@ -322,7 +323,9 @@ int log_debug(const char *fmt, ...);
 #define log_info(FMT,...)
 #define log_debug(FMT,...)
 #define log_init()   0
+#endif /* ENABLE_LOG */
 
-#endif
 
 #endif /* LOG_H_ */
+
+

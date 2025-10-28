@@ -44,8 +44,8 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM      (xrw)  : ORIGIN = 0x20000000,   LENGTH = 18K    /* RAM generale: 18KB */
-  RAM_LOG  (xrw)  : ORIGIN = 0x20004800,   LENGTH = 2K     /* RAM dedicata al log: 2KB */
+  RAM      (xrw)  : ORIGIN = 0x20000000,   LENGTH = 16K    /* RAM generale: 18KB */
+  RAM_LOG  (xrw)  : ORIGIN = 0x20004800,   LENGTH = 4K     /* RAM dedicata al log: 4KB */
   FLASH    (rx)   : ORIGIN = 0x8000000,   LENGTH = 64K
 }
 

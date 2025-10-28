@@ -39,10 +39,11 @@
  *
  ******************************************************************************
  */
-#if ENABLE_LOG
+#include "common.h"
 #include "log.h"
 #include "utils.h"
 #include <stdarg.h>
+#if ENABLE_LOG
 
 /* =============================================================================
  * STRUTTURA DEL BUFFER CIRCOLARE
@@ -240,6 +241,8 @@ static void log_remove_oldest_message(void)
 int log_init(void)
 {
     /* Acquisisce il lock */
+	memset(&log_buffer,0,sizeof(log_buffer_t));
+
     if (!log_lock_acquire())
     {
         return LOG_ERROR_LOCKED;

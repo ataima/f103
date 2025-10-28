@@ -124,5 +124,5 @@ static inline void __enable_irq(void) {
  * INCLUDE REGISTRI PROCESSORE STM32F103
  * ============================================================================= */
 #include "stm32f103_regs.h"
-#define ENABLE_LOG		0
+
 #endif /* COMMON_H_ */

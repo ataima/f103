@@ -51,6 +51,8 @@ set (PROJECT_SOURCES
 	src/main.c
 	src/clock.c
 	src/log.c
+	src/itm.c
+	src/uart.c
 	src/utils.c
 	src/syscalls.c
 	src/sysmem.c

@@ -20,10 +20,15 @@
 #include <stdio.h>
 #include "clock.h"  /* Include il nostro modulo di gestione clock */
 #include "log.h"    /* Include il sistema di logging */
+#include "itm.h"    /* Include il supporto ITM per console via SWO */
+#include "uart.h"   /* Include il supporto UART per console seriale */
 
 #if !defined(__SOFT_FP__) && defined(__ARM_FP)
   #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 #endif
+
+static char * log_buffer_startup __attribute__((section(".log_buffer")));
+
 
 int main(void)
 {
@@ -44,6 +49,24 @@ int main(void)
     /* Configura il sistema di clock a 72 MHz */
     clock_status = SystemClock_Config();
 
+    /* =========================================================================
+     * WORKAROUND PER SWV/ITM
+     * =========================================================================
+     *
+     * Dopo aver configurato il clock a 72 MHz, è necessario un breve delay
+     * per permettere al debugger ST-Link di sincronizzarsi con la nuova
+     * frequenza prima di inizializzare l'ITM.
+     *
+     * Senza questo delay, potresti vedere l'errore "failed to init SWV"
+     * nel debugger STM32CubeIDE.
+     *
+     * Questo delay è necessario solo per il debug, in produzione può essere
+     * rimosso se non usi ITM.
+     */
+    for (volatile u32 i = 0; i < 100000; i++) {
+        __NOP();  /* Delay ~10ms @ 72 MHz */
+    }
+
     /* Verifica che la configurazione sia andata a buon fine */
     if (clock_status != CLOCK_OK)
     {
@@ -62,11 +85,11 @@ int main(void)
         /* Per ora, stampa un messaggio di errore e resta bloccato */
         if (clock_status == CLOCK_ERROR_HSE)
         {
-            log_error("HSE non si avvia! Verifica il quarzo esterno");
+            strcpy("ERROR: HSE non si avvia! Verifica il quarzo esterno",log_buffer_startup);
         }
         else if (clock_status == CLOCK_ERROR_PLL)
         {
-        	log_error("ERRORE: PLL non fa lock! Problema di configurazione");
+        	strcpy("ERRORE: PLL non fa lock! Problema di configurazione",log_buffer_startup);
         }
 
         /* Loop infinito in caso di errore */
@@ -96,16 +119,119 @@ int main(void)
     log_debug("HSE: 8 MHz, PLL: x9, SYSCLK: 72 MHz");
 
     /* =========================================================================
+     * INIZIALIZZAZIONE ITM (CONSOLE VIA SWO)
+     * =========================================================================
+     *
+     * L'ITM (Instrumentation Trace Macrocell) permette di inviare messaggi
+     * di debug attraverso il pin SWO dello ST-Link, senza usare pin UART.
+     *
+     * IMPORTANTE: Funziona solo se il debugger è connesso!
+     * Se il debugger non è connesso, itm_init() e itm_write() ritornano
+     * con timeout ma NON bloccano il programma.
+     */
+#if ENABLE_ITM
+
+    int itm_status = itm_init();
+    if (itm_status == ITM_OK)
+    {
+        /* ITM inizializzato con successo */
+        itm_write("\n");
+        itm_write("=======================================================\n");
+        itm_write("  STM32F103C8T6 - Console via ITM/SWO\n");
+        itm_write("=======================================================\n");
+        itm_write("SYSCLK: 72 MHz | SWO: 2 MHz | ITM Port: 0\n");
+        itm_write("=======================================================\n\n");
+
+        /* Dumpa i log accumulati fino ad ora */
+        itm_write("[BOOT] Dump dei log di avvio:\n\n");
+        log_via_itm();  /* Questa funzione svuota il buffer circolare! */
+
+        itm_write("\n[BOOT] Sistema pronto.\n");
+        itm_write("[BOOT] Entrando nel main loop...\n\n");
+
+        /* Riaggiungi un log per il main loop (il buffer è stato svuotato) */
+        log_info("Main loop avviato");
+    }
+    else
+    {
+        /* ITM non disponibile (debugger non connesso o errore) */
+        /* Non è un errore critico, continuiamo comunque */
+        log_warning("ITM non disponibile (debugger non connesso?)");
+    }
+
+    #endif
+
+    /* =========================================================================
+     * INIZIALIZZAZIONE UART (CONSOLE SERIALE)
+     * =========================================================================
+     *
+     * L'UART permette di inviare messaggi di debug attraverso un cavo seriale,
+     * senza bisogno del debugger. Funziona sempre, anche in produzione.
+     *
+     * COLLEGAMENTO:
+     * - TX (PA9) → RX dell'adattatore USB-UART
+     * - GND      → GND dell'adattatore
+     * - Baud: 115200, 8N1
+     *
+     * Visualizza con: minicom, putty, screen, etc.
+     */
+
+    int uart_status = uart_init();
+    if (uart_status == UART_OK)
+    {
+        /* UART inizializzato con successo */
+        uart_write("\r\n\r\n");
+        uart_write("=======================================================\r\n");
+        uart_write("  STM32F103C8T6 - Console UART @ 115200 baud\r\n");
+        uart_write("=======================================================\r\n");
+        uart_write("SYSCLK: 72 MHz | UART: PA9(TX) PA10(RX)\r\n");
+        uart_write("=======================================================\r\n\r\n");
+
+        /* Dumpa i log accumulati fino ad ora */
+        uart_write("[BOOT] Dump dei log di avvio:\r\n\r\n");
+        log_via_uart();  /* Questa funzione svuota il buffer circolare! */
+
+        uart_write("\r\n[BOOT] Sistema pronto.\r\n");
+        uart_write("[BOOT] Entrando nel main loop...\r\n\r\n");
+
+        /* Riaggiungi un log per il main loop (il buffer è stato svuotato) */
+        log_info("Main loop avviato");
+    }
+    else
+    {
+        /* UART non disponibile - errore di inizializzazione */
+        log_error("UART init failed!");
+    }
+
+    /* =========================================================================
      * MAIN LOOP
      * =========================================================================
      */
 
     /* Loop principale dell'applicazione */
+    u32 counter = 0;
 
     while(1)
     {
+        /* Contatore per heartbeat periodico */
+        counter++;
 
-        /* Per ora, non facciamo altro - il micro rimane in idle */
+        /* Ogni ~1 milione di cicli, invia un heartbeat via UART
+         * (commentato per evitare spam - decommentare per test) */
+        /*
+        if (counter % 1000000 == 0) {
+            log_info("Heartbeat");
+            uart_write(".");
+
+            // Ogni 10 heartbeat, dumpa i nuovi log
+            if (counter % 10000000 == 0) {
+                uart_write("\r\n");
+                log_via_uart();
+            }
+        }
+        */
+
+        /* Per ora, rimaniamo in idle */
     }
 
     /* Nota: questo punto non viene mai raggiunto perché il while(1) è infinito */
