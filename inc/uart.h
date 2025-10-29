@@ -47,7 +47,7 @@
  *
  * Default: USART1 (più veloce, pin comodi sulla Blue Pill)
  */
-#define UART_USE_USART      1
+#define UART_USE_USART      3
 
 /**
  * @brief Baud rate per la comunicazione seriale
@@ -243,38 +243,7 @@ int uart_getchar(char *ch);
  */
 int log_via_uart(void);
 
-/**
- * @brief  Scrive un numero intero sull'UART (helper function)
- *
- * @details Converte un numero intero in stringa decimale e lo invia via UART.
- *          Utile per debug veloce senza sprintf.
- *
- * @param  num - Numero da stampare
- *
- * @retval int - UART_OK se successo
- *
- * @example
- *   uart_write("Counter: ");
- *   uart_write_int(counter);
- *   uart_write("\n");
- */
-int uart_write_int(i32 num);
 
-/**
- * @brief  Scrive un numero in esadecimale sull'UART (helper function)
- *
- * @details Converte un numero in stringa esadecimale (0xABCD1234) e lo invia via UART.
- *
- * @param  num - Numero da stampare in hex
- *
- * @retval int - UART_OK se successo
- *
- * @example
- *   uart_write("Address: ");
- *   uart_write_hex((u32)&variable);
- *   uart_write("\n");
- */
-int uart_write_hex(u32 num);
 
 /* =============================================================================
  * NOTE DI UTILIZZO

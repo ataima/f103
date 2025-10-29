@@ -26,6 +26,7 @@
 #include "uart.h"
 #include "log.h"
 #include "clock.h"
+#include "utils.h"
 #include <stddef.h>
 
 /* =============================================================================
@@ -449,8 +450,6 @@ int log_via_uart(void)
     /* Header del dump */
     uart_write("=======================================================\r\n");
     uart_write("[LOG DUMP] Inizio dump del buffer circolare\r\n");
-    uart_write("[LOG DUMP] Messaggi presenti: ");
-    uart_write_int(total_messages);
     uart_write("\r\n");
     uart_write("=======================================================\r\n\r\n");
 
@@ -474,10 +473,11 @@ int log_via_uart(void)
         }
     }
 
+    u32_to_dec_pad(sent_count, buffer, LOG_MAX_MESSAGE_SIZE);
     /* Footer del dump */
     uart_write("\r\n=======================================================\r\n");
     uart_write("[LOG DUMP] Fine dump - Messaggi inviati: ");
-    uart_write_int(sent_count);
+    uart_write(buffer);
     uart_write("\r\n");
     uart_write("=======================================================\r\n");
 
@@ -488,65 +488,7 @@ int log_via_uart(void)
 #endif
 }
 
-/**
- * @brief  Scrive un numero intero sull'UART (helper)
- */
-int uart_write_int(i32 num)
-{
-    char buffer[12];  /* Max: "-2147483648\0" */
-    int i = 0;
-    int is_negative = 0;
 
-    /* Gestisci zero */
-    if (num == 0) {
-        return uart_putchar('0');
-    }
-
-    /* Gestisci numeri negativi */
-    if (num < 0) {
-        is_negative = 1;
-        num = -num;
-    }
-
-    /* Estrai le cifre (in ordine inverso) */
-    while (num > 0 && i < 11) {
-        buffer[i++] = '0' + (num % 10);
-        num /= 10;
-    }
-
-    /* Aggiungi il segno meno se negativo */
-    if (is_negative) {
-        uart_putchar('-');
-    }
-
-    /* Stampa le cifre in ordine corretto (inverso) */
-    for (int j = i - 1; j >= 0; j--) {
-        uart_putchar(buffer[j]);
-    }
-
-    return UART_OK;
-}
-
-/**
- * @brief  Scrive un numero in esadecimale sull'UART (helper)
- */
-int uart_write_hex(u32 num)
-{
-    const char hex_chars[] = "0123456789ABCDEF";
-    char buffer[11];  /* "0x" + 8 cifre hex + '\0' */
-    int i = 0;
-
-    /* Prefisso "0x" */
-    uart_write("0x");
-
-    /* Estrai le cifre hex (8 cifre, con zeri leading) */
-    for (int shift = 28; shift >= 0; shift -= 4) {
-        buffer[i++] = hex_chars[(num >> shift) & 0xF];
-    }
-    buffer[i] = '\0';
-
-    return uart_write(buffer);
-}
 
 /* =============================================================================
  * NOTE IMPLEMENTATIVE
