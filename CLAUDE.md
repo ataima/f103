@@ -23,6 +23,8 @@ f103/
 │   ├── log.h                  # Logging system API
 │   ├── itm.h                  # ITM console via SWO API
 │   ├── uart.h                 # UART console API
+│   ├── gpio.h                 # GPIO configuration API (CNC controller)
+│   ├── systick.h              # SysTick system timer API
 │   └── utils.h                # Utility functions
 ├── src/                        # Source files
 │   ├── main.c                 # Main application
@@ -30,9 +32,15 @@ f103/
 │   ├── log.c                  # Logging system
 │   ├── itm.c                  # ITM console support
 │   ├── uart.c                 # UART console support
+│   ├── gpio.c                 # GPIO configuration (CNC controller)
+│   ├── systick.c              # SysTick system timer
 │   ├── utils.c                # Utility functions
 │   ├── syscalls.c             # Semihosting support
 │   └── sysmem.c               # Memory management
+├── doc/                        # Documentation
+│   ├── pin_out.md             # GPIO pinout for 3-axis CNC
+│   ├── rm0008-reference-manual.pdf
+│   └── stm32f103c8.pdf
 ├── Startup/
 │   └── startup_stm32f103c8tx.s # Startup assembly code
 ├── CMakeLists.txt              # Build configuration
@@ -80,13 +88,23 @@ make -C Release -j
 
 The output is `Debug/f103.elf` or `Release/f103.elf`.
 
-**Typical binary sizes:**
-- Flash (text): ~8 KB (code)
-- RAM (bss): ~4 KB (includes 2 KB log buffer)
+**Typical binary sizes (Debug build):**
+- Flash (text): ~11.2 KB (11176 bytes)
+  - System initialization and drivers
+  - Includes: clock, GPIO, SysTick, UART, ITM, logging
+- Data: 4 bytes (initialized variables)
+- RAM (bss): ~4 KB (4036 bytes)
+  - 2 KB dedicated log buffer (0x20004800)
+  - SysTick tick counter and statistics (~16 bytes)
+  - Other uninitialized variables
+- **Total:** ~15.2 KB
+
+**Flash usage:** ~17% of 64 KB available
+**RAM usage:** ~20% of 20 KB available
 
 ### Adding New Source Files
 
-Edit `CMakeLists.txt` and add files to the `PROJECT_SOURCES` variable (lines 48-58).
+Edit `CMakeLists.txt` and add files to the `PROJECT_SOURCES` variable (lines 48-61).
 
 ## Architecture
 
@@ -157,11 +175,196 @@ A **thread-safe circular buffer** logging system with dedicated RAM allocation:
 
 ### Main Application (src/main.c)
 
-Initialization sequence:
+**Initialization sequence:**
 1. `SystemClock_Config()` - Configure clock to 72 MHz
-2. `log_init()` - Initialize logging system
-3. Log startup messages using the logging system
-4. Infinite main loop (currently idle)
+2. Delay for SWV/ITM sync (workaround for debugger)
+3. `log_init()` - Initialize logging system
+4. `itm_init()` - Initialize ITM console via SWO (optional, if `ENABLE_ITM` is set)
+5. `gpio_init_all()` - Initialize all GPIO for CNC controller
+6. `systick_init()` - Initialize SysTick timer for 1ms system tick
+7. `uart_init()` - Initialize UART3 console (115200 baud, PB10=TX, PB11=RX)
+8. Main loop with LED status blink pattern
+
+**Main loop behavior:**
+The main loop implements a recognizable LED blink pattern on PC13 (built-in LED):
+- **Pattern:** 200ms OFF → 400ms ON → 400ms OFF → 200ms ON (1200ms cycle)
+- **Purpose:** Visual indication that system is running and initialized correctly
+- **LED:** Active LOW (0=ON, 1=OFF)
+- **Timing:** Uses `systick_delay_ms()` for precise delays (instead of busy-wait loops)
+
+This pattern is distinctive and allows quick visual verification that:
+- The firmware is running
+- The clock is configured correctly
+- GPIO initialization succeeded
+- SysTick timer is working correctly
+
+### GPIO Configuration (src/gpio.c, inc/gpio.h)
+
+**Complete GPIO management for 3-axis CNC controller:**
+
+This module handles all GPIO configuration for the CNC controller according to the pinout defined in `doc/pin_out.md`.
+
+**Pin Groups:**
+- **Stepper Motors (9 pins):**
+  - STEP signals: PA0 (X), PA1 (Y), PB0 (Z) - Will use TIM2/TIM3 for 20kHz PWM
+  - DIR signals: PB12 (X), PB13 (Y), PB14 (Z) - Direction control
+  - ENABLE signals: PB3 (X), PB4 (Y), PB5 (Z) - Active LOW enable
+
+- **Rotary Encoders (6 pins):**
+  - X-axis: PA6/PA7 (TIM3 CH1/CH2)
+  - Y-axis: PB6/PB7 (TIM4 CH1/CH2)
+  - Z-axis: PA8/PA9 (TIM1 CH1/CH2)
+
+- **Limit Switches (6 pins):**
+  - X: PB8 (MIN), PB9 (MAX)
+  - Y: PA2 (MIN), PA3 (MAX)
+  - Z: PA4 (MIN), PA5 (MAX)
+  - All configured with internal pull-up (active LOW switches)
+
+- **Generic I/O (6 pins):**
+  - IO_1: PC14, IO_2: PC15, IO_3: PB1
+  - IO_4: PA10, IO_5: PA15, IO_6: PB15
+  - Configurable for LCD, relays, LEDs, etc.
+
+- **Status LED:**
+  - PC13 - Built-in LED, active LOW
+
+**Note:** UART3 pins (PB10=TX, PB11=RX) are configured automatically by `uart_init()` and are NOT managed by the GPIO module to avoid conflicts.
+
+**Key Functions:**
+- `gpio_init_all()` - Initialize ALL GPIO (enables clocks + calls all group functions)
+- `gpio_init_motors()` - Configure stepper motor pins
+- `gpio_init_encoders()` - Configure encoder inputs
+- `gpio_init_limit_switches()` - Configure limit switch inputs
+- `gpio_init_io()` - Configure generic I/O pins
+- `gpio_init_led()` - Configure status LED
+
+**Helper Functions (inline):**
+- `gpio_set(port, pin)` - Set pin HIGH
+- `gpio_reset(port, pin)` - Set pin LOW
+- `gpio_read(port, pin)` - Read pin state
+- `gpio_toggle(port, pin)` - Toggle pin state
+
+**Implementation Phases:**
+- **Phase 1 (Current):** All pins configured as standard GPIO
+  - STEP pins: GPIO output (for manual testing)
+  - Encoder pins: GPIO input (for reading)
+  - Ready for basic testing and validation
+
+- **Phase 2 (Future):** Hardware peripherals
+  - STEP pins: Reconfigure as TIM2/TIM3 PWM outputs
+  - Encoder pins: Reconfigure as TIM1/TIM3/TIM4 encoder inputs
+  - Limit switches: Add EXTI interrupt support
+
+**Usage Example:**
+```c
+#include "gpio.h"
+
+int main(void) {
+    SystemClock_Config();
+    log_init();
+    gpio_init_all();  // Initialize all GPIO
+
+    // Enable motor X
+    gpio_reset(ENABLE_X_PORT, ENABLE_X_PIN);
+
+    // Generate manual step pulse
+    gpio_set(STEP_X_PORT, STEP_X_PIN);
+    delay_us(10);
+    gpio_reset(STEP_X_PORT, STEP_X_PIN);
+
+    // Read limit switch
+    if (gpio_read(X_MIN_PORT, X_MIN_PIN) == 0) {
+        log_warning("X MIN limit triggered!");
+    }
+
+    // Blink status LED
+    gpio_toggle(LED_STATUS_PORT, LED_STATUS_PIN);
+}
+```
+
+**Important Notes:**
+- GPIO clocks (GPIOA/B/C) must be enabled before accessing registers (done automatically in `gpio_init_all()`)
+- All ENABLE pins initialized HIGH (motors disabled) for safety
+- Many pins are 5V tolerant (see `doc/pin_out.md`)
+- STEP pins configured at 50MHz for future PWM use
+- Complete pinout documentation available in `doc/pin_out.md`
+
+### SysTick System Timer (src/systick.c, inc/systick.h)
+
+**Hardware timer for system scheduling and timing:**
+
+The SysTick timer is a 24-bit down-counter integrated in the ARM Cortex-M3 core, configured to generate interrupts every 1ms for precise system timing.
+
+**Configuration:**
+- **Frequency:** 1000 Hz (1ms per tick)
+- **Clock source:** HCLK (72 MHz)
+- **Reload value:** 71999 (72000 - 1)
+- **Tick counter:** 32-bit unsigned (wraps after ~49.7 days)
+- **Interrupt:** `SysTick_Handler()` called every 1ms
+
+**Key Features:**
+- **Precise timing:** Hardware-based, independent of CPU load
+- **Low power:** Uses `__WFI()` in delays to put CPU in sleep mode
+- **Wraparound handling:** Arithmetic handles overflow correctly
+- **Thread-safe:** 32-bit reads are atomic on Cortex-M3
+
+**API Functions:**
+
+*Initialization:*
+- `systick_init(sysclk_hz)` - Initialize SysTick (call after clock config)
+- `systick_disable()` - Disable SysTick timer
+
+*Tick Counter:*
+- `systick_get_tick()` - Get current tick count (milliseconds since init)
+- `systick_millis()` - Alias for get_tick()
+
+*Delay Functions:*
+- `systick_delay_ms(ms)` - Blocking delay with WFI for power saving
+- `systick_timeout(start, ms)` - Non-blocking timeout check
+
+*Statistics:*
+- `systick_get_interrupt_count()` - Total interrupts processed
+- `systick_get_hw_counter()` - Raw 24-bit hardware counter (sub-ms resolution)
+
+*Utilities (inline):*
+- `systick_ms_to_ticks()`, `systick_ticks_to_ms()`, `systick_seconds_to_ticks()`
+
+**Usage Examples:**
+
+```c
+// Blocking delay
+systick_delay_ms(500);  // Wait 500ms (CPU sleeps with WFI)
+
+// Non-blocking timeout
+u32 start = systick_get_tick();
+while (!systick_timeout(start, 1000)) {
+    // Do something for max 1 second
+    if (task_done()) break;
+}
+
+// Measure elapsed time
+u32 t1 = systick_get_tick();
+do_something();
+u32 elapsed = systick_get_tick() - t1;  // Handles wraparound correctly
+log_info("Elapsed: %u ms", elapsed);
+
+// Get system uptime
+u32 uptime_ms = systick_millis();
+u32 uptime_sec = uptime_ms / 1000;
+```
+
+**Implementation Details:**
+- **Interrupt priority:** Default (can be configured if needed)
+- **ISR overhead:** Minimal (~10 CPU cycles: increment counters only)
+- **No logging in ISR:** Prevents deadlock with log system
+- **Registers:** Uses definitions from `stm32f103_regs.h` (SYSTICK_CTRL, SYSTICK_LOAD, SYSTICK_VAL)
+
+**Important Notes:**
+- Must be initialized AFTER `SystemClock_Config()` (needs SYSCLK frequency)
+- Replaces busy-wait loops with efficient timer-based delays
+- Tick counter wraps at 2^32 - 1, but subtraction handles this correctly
+- For sub-millisecond timing, use `systick_get_hw_counter()` (13.9ns resolution @ 72MHz)
 
 ### ITM Console Support (src/itm.c, inc/itm.h)
 
@@ -220,17 +423,24 @@ int count = log_via_itm();  // Drains circular buffer to ITM
 
 **Serial console output without debugger dependency:**
 
-Simple UART driver for debug output via USB-Serial adapter:
+Simple UART driver for debug output via USB-Serial adapter.
+
+**Current Configuration:**
+- **USART3** (APB1 @ 36 MHz)
+- **Pins:** PB10 (TX), PB11 (RX)
+- **Baud rate:** 115200
+- **Format:** 8N1 (8 data bits, no parity, 1 stop bit)
+- **Mode:** TX + RX enabled
 
 **Features:**
 - Works without debugger attached
-- Configurable baud rate (default: 115200)
-- TX-only mode (RX optional, currently disabled)
+- Configurable to use USART1/2/3 (see `uart.h`)
 - Helper functions for integers and hex output
 - Compatible with any USB-UART adapter
+- GPIO pins configured automatically by `uart_init()`
 
 **Key Functions:**
-- `uart_init()` - Initialize UART1 at 115200,8,N,1
+- `uart_init()` - Initialize UART3 at 115200,8,N,1 (configures GPIO pins internally)
 - `uart_finit()` - Deinitialize UART
 - `uart_write(str)` - Send string to UART
 - `uart_putchar(ch)` - Send single character
@@ -242,8 +452,8 @@ Simple UART driver for debug output via USB-Serial adapter:
 ```
 USB-UART Adapter    →  STM32F103 (Blue Pill)
 GND                 →  GND
-RX                  →  PA9 (USART1 TX)
-(TX)                →  (PA10 - USART1 RX, optional)
+RX                  →  PB10 (USART3 TX)
+TX                  →  PB11 (USART3 RX)
 ```
 
 **Viewing UART Output:**
@@ -259,14 +469,18 @@ screen /dev/ttyUSB0 115200
 ```
 
 **Configuration:**
-- Default: USART1, TX=PA9, 115200 baud
+- Current: USART3, TX=PB10, RX=PB11, 115200 baud
 - Can be changed in `inc/uart.h`:
-  - `UART_USE_USART` (1, 2, or 3)
+  - `UART_USE_USART` (1, 2, or 3) - Currently set to 3
   - `UART_BAUDRATE` (9600 to 921600)
   - `UART_ENABLE_RX` (0=TX only, 1=TX+RX)
 
 **Usage Example:**
 ```c
+// GPIO must be initialized first (done in main)
+gpio_init_all();
+
+// UART configures its own pins (PB10/PB11) automatically
 uart_init();
 uart_write("System started\r\n");
 uart_write("Temperature: ");
@@ -427,15 +641,17 @@ Based on existing code:
 
 ## Adding Peripherals
 
-When implementing new peripherals (UART, SPI, I2C, GPIO, etc.):
+When implementing new peripherals (UART, SPI, I2C, timers, etc.):
 
 1. Check bus assignment:
    - APB1 (36 MHz): I2C1/2, UART2-5, TIM2-7, SPI2
    - APB2 (72 MHz): USART1, SPI1, TIM1, ADC1/2, GPIOA-E
-2. Enable peripheral clock in RCC (define `RCC_APBxENR` register)
-3. Configure GPIO alternate functions if needed
+2. Enable peripheral clock in RCC (use `RCC_APBxENR` register)
+3. Configure GPIO alternate functions if needed (see `src/gpio.c` for examples)
 4. Write initialization following clock.c pattern (detailed comments, step-by-step)
 5. Remember timer clocks on APB1/APB2 are automatically doubled when prescaler ≠ 1
+
+**Note:** Basic GPIO configuration is already implemented in `src/gpio.c` for the CNC controller. See the "GPIO Configuration" section above for details on available pins and their current assignments.
 
 ## Known Issues
 

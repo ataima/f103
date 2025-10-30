@@ -36,12 +36,12 @@
 | 24 | **SX** | **15** | **PB10** | **UART3_TX** | USART3 | OUT | UART | TX ESP32 - D6/Serial3 TX, 5V tolerant |
 | 25 | **SX** | **16** | **PB11** | **UART3_RX** | USART3 | IN | UART | RX ESP32 - Serial3 RX, 5V tolerant |
 | **DISPLAY LCD 4x20 (4-bit) - CONFIGURAZIONE CORRETTA** |
-| 26 | **DX** | **14** | **PA10** | **LCD_RS** | GPIO | OUT | GPIO | Register Select - 5V tolerant |
-| 27 | **SX** | **14** | **PB1** | **LCD_E** | GPIO | OUT | GPIO | Enable/Clock - PWM3/4 |
-| 28 | **SX** | **3** | **PC14** | **LCD_D4** | GPIO | OUT | GPIO | Data bit 4 |
-| 29 | **SX** | **4** | **PC15** | **LCD_D5** | GPIO | OUT | GPIO | Data bit 5 |
-| 30 | **DX** | **17** | **PB15** | **LCD_D6** | GPIO | OUT | GPIO | ✅ Data bit 6 - SPI2 MOSI, 5V tolerant |
-| 31 | **DX** | **11** | **PA15** | **LCD_D7** | GPIO | OUT | GPIO | Data bit 7 - 5V tolerant |
+| 26 | **DX** | **14** | **PA10** | **IO_4** | GPIO | OUT | GPIO | Register Select - 5V tolerant |
+| 27 | **SX** | **14** | **PB1** | **IO_3** | GPIO | OUT | GPIO | Enable/Clock - PWM3/4 |
+| 28 | **SX** | **3** | **PC14** | **IO_1** | GPIO | OUT | GPIO | Data bit 4 |
+| 29 | **SX** | **4** | **PC15** | **IO_2** | GPIO | OUT | GPIO | Data bit 5 |
+| 30 | **DX** | **17** | **PB15** | **IO_6** | GPIO | OUT | GPIO | ✅ Data bit 6 - SPI2 MOSI, 5V tolerant |
+| 31 | **DX** | **11** | **PA15** | **IO_5** | GPIO | OUT | GPIO | Data bit 7 - 5V tolerant |
 | **PROGRAMMAZIONE SWD** |
 | 32 | **PAD** | **-** | **PA13** | **SWDIO** | SWD | BIDIR | DEBUG | ✅ Pad sulla board - sempre disponibile! |
 | 33 | **PAD** | **-** | **PA14** | **SWCLK** | SWD | IN | DEBUG | ✅ Pad sulla board - sempre disponibile! |
@@ -67,8 +67,8 @@ Pos  GPIO     Funzione CNC              Note
 ─────────────────────────────────────────────────
  1   VBAT     -                         RTC backup
  2   PC13  →  LED_STATUS ✅            Solo LED onboard
- 3   PC14  →  LCD_D4
- 4   PC15  →  LCD_D5
+ 3   PC14  →  IO_1
+ 4   PC15  →  IO_2
  5   PA0   →  STEP_X ⚙️
  6   PA1   →  STEP_Y ⚙️
  7   PA2   →  Y_MIN 🛑
@@ -78,7 +78,7 @@ Pos  GPIO     Funzione CNC              Note
 11   PA6   →  ENC_X_A 🔄
 12   PA7   →  ENC_X_B 🔄
 13   PB0   →  STEP_Z ⚙️
-14   PB1   →  LCD_E
+14   PB1   →  IO_3
 15   PB10  →  UART3_TX 📡 (5V✓)
 16   PB11  →  UART3_RX 📡 (5V✓)
 17   RESET
@@ -101,13 +101,13 @@ Pos  GPIO     Funzione CNC              Note
  8   PB5   →  ENABLE_Z ⚙️
  9   PB4   →  ENABLE_Y ⚙️
 10   PB3   →  ENABLE_X ⚙️
-11   PA15  →  LCD_D7                (5V✓)
+11   PA15  →  IO_5                 (5V✓)
 12   PA12  →  USB_DP 🔌            (5V✓)
 13   PA11  →  USB_DM 🔌            (5V✓)
-14   PA10  →  LCD_RS                (5V✓)
-15   PA9   →  ENC_Z_B 🔄            (5V✓)
-16   PA8   →  ENC_Z_A 🔄            (5V✓)
-17   PB15  →  LCD_D6 ✅            (5V✓) NUOVO!
+14   PA10  →  IO_4                 (5V✓)
+15   PA9   →  ENC_Z_B 🔄           (5V✓)
+16   PA8   →  ENC_Z_A 🔄           (5V✓)
+17   PB15  →  IO_6                 (5V✓) 
 18   PB14  →  DIR_Z ⚙️              (5V✓)
 19   PB13  →  DIR_Y ⚙️              (5V✓)
 20   PB12  →  DIR_X ⚙️              (5V✓)
@@ -119,17 +119,14 @@ Pos  GPIO     Funzione CNC              Note
 ## 📊 RIEPILOGO FINALE
 
 ```
-GPIO Totali:           37
-GPIO Usati:            31
-GPIO Liberi:           6
 
 Pin utilizzati:
 - Motori:              9
 - Encoder:             6
 - Finecorsa:           6
 - USB:                 2 (hardware)
-- UART:                2
-- Display:             6 (SENZA conflitti!)
+- UART/i2C:            2
+- IO_EXP	       6 
 - LED Status:          1 (dedicato!)
 - SWD:                 2 (su pad)
 ```

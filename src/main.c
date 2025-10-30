@@ -18,16 +18,18 @@
 
 #include "common.h"
 #include <stdio.h>
-#include "clock.h"  /* Include il nostro modulo di gestione clock */
-#include "log.h"    /* Include il sistema di logging */
-#include "itm.h"    /* Include il supporto ITM per console via SWO */
-#include "uart.h"   /* Include il supporto UART per console seriale */
+#include "clock.h"   /* Include il nostro modulo di gestione clock */
+#include "log.h"     /* Include il sistema di logging */
+#include "itm.h"     /* Include il supporto ITM per console via SWO */
+#include "uart.h"    /* Include il supporto UART per console seriale */
+#include "gpio.h"    /* Include la configurazione GPIO CNC */
+#include "systick.h" /* Include il timer di sistema SysTick */
+#include "test.h"    /* Include le funzioni di test hardware */
 
 #if !defined(__SOFT_FP__) && defined(__ARM_FP)
   #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 #endif
 
-static char * log_buffer_startup __attribute__((section(".log_buffer")));
 
 
 int main(void)
@@ -85,11 +87,11 @@ int main(void)
         /* Per ora, stampa un messaggio di errore e resta bloccato */
         if (clock_status == CLOCK_ERROR_HSE)
         {
-            strcpy("ERROR: HSE non si avvia! Verifica il quarzo esterno",log_buffer_startup);
+            strcpy(log_site(),"ERROR: HSE non si avvia! Verifica il quarzo esterno");
         }
         else if (clock_status == CLOCK_ERROR_PLL)
         {
-        	strcpy("ERRORE: PLL non fa lock! Problema di configurazione",log_buffer_startup);
+        	strcpy(log_site(),"ERRORE: PLL non fa lock! Problema di configurazione");
         }
 
         /* Loop infinito in caso di errore */
@@ -162,6 +164,50 @@ int main(void)
     #endif
 
     /* =========================================================================
+     * INIZIALIZZAZIONE GPIO (SISTEMA CNC)
+     * =========================================================================
+     *
+     * Configura tutti i GPIO per il controller CNC 3 assi:
+     * - Motori stepper (STEP, DIR, ENABLE)
+     * - Encoder rotativi (canali A/B)
+     * - Finecorsa (MIN/MAX)
+     * - I/O generici
+     * - LED di stato
+     *
+     * IMPORTANTE: Questa funzione deve essere chiamata PRIMA di uart_init()
+     * perché abilita i clock GPIO necessari.
+     */
+
+    int gpio_status = gpio_init_all();
+    if (gpio_status != GPIO_OK)
+    {
+        log_error("Inizializzazione GPIO fallita!");
+        while(1);
+    }
+
+    log_info("GPIO CNC inizializzati correttamente");
+
+    /* =========================================================================
+     * INIZIALIZZAZIONE SYSTICK (TIMER DI SISTEMA)
+     * =========================================================================
+     *
+     * Configura il SysTick timer per generare interrupt ogni 1ms.
+     * Fornisce tick counter e funzioni di delay precise per scheduling.
+     *
+     * IMPORTANTE: Deve essere inizializzato DOPO SystemClock_Config() perché
+     * usa la frequenza SYSCLK per calcolare il reload value.
+     */
+
+    int systick_status = systick_init(SystemClock_GetFreq());
+    if (systick_status != SYSTICK_OK)
+    {
+        log_error("Inizializzazione SysTick fallita!");
+        while(1);
+    }
+
+    log_info("SysTick inizializzato: tick a 1ms");
+
+    /* =========================================================================
      * INIZIALIZZAZIONE UART (CONSOLE SERIALE)
      * =========================================================================
      *
@@ -169,11 +215,13 @@ int main(void)
      * senza bisogno del debugger. Funziona sempre, anche in produzione.
      *
      * COLLEGAMENTO:
-     * - TX (PA9) → RX dell'adattatore USB-UART
-     * - GND      → GND dell'adattatore
+     * - TX (PB10) → RX dell'adattatore USB-UART
+     * - GND       → GND dell'adattatore
      * - Baud: 115200, 8N1
      *
      * Visualizza con: minicom, putty, screen, etc.
+     *
+     * NOTA: I pin UART3 (PB10/PB11) sono configurati internamente da uart_init()
      */
 
     int uart_status = uart_init();
@@ -209,29 +257,60 @@ int main(void)
      */
 
     /* Loop principale dell'applicazione */
-    u32 counter = 0;
+    /* Pattern lampeggio LED: 200ms OFF, 400ms ON, 400ms OFF, 200ms ON (ciclo 1200ms) */
+
+    log_info("Entrando nel main loop con pattern LED");
+
+    /* Variabile di stato per finecorsa (usata anche per macchina a stati futura) */
+    int limit_active = 0;
 
     while(1)
     {
-        /* Contatore per heartbeat periodico */
-        counter++;
+        /* =====================================================================
+         * TEST HARDWARE
+         * =====================================================================
+         * Esegue i test hardware abilitati (controllati da macro in test.h).
+         * Se un test rileva un problema (es. finecorsa attivo), il LED si ferma.
+         */
 
-        /* Ogni ~1 milione di cicli, invia un heartbeat via UART
-         * (commentato per evitare spam - decommentare per test) */
-        /*
-        if (counter % 1000000 == 0) {
-            log_info("Heartbeat");
-            uart_write(".");
+        EVAL_TEST_LIMIT(limit_active = test_limit();)
 
-            // Ogni 10 heartbeat, dumpa i nuovi log
-            if (counter % 10000000 == 0) {
-                uart_write("\r\n");
-                log_via_uart();
-            }
+        /* =====================================================================
+         * PATTERN LED STATO
+         * =====================================================================
+         * Il LED lampeggia con pattern riconoscibile solo se nessun test
+         * sta bloccando il sistema (es. nessun finecorsa premuto).
+         */
+
+        if (!limit_active)
+        {
+            /* Pattern normale: 200ms OFF, 400ms ON, 400ms OFF, 200ms ON */
+
+            /* Fase 1: LED OFF per 200ms */
+            gpio_set(LED_STATUS_PORT, LED_STATUS_PIN);     // LED spento (attivo LOW)
+            systick_delay_ms(200);
+
+            /* Fase 2: LED ON per 400ms */
+            gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);   // LED acceso
+            systick_delay_ms(400);
+
+            /* Fase 3: LED OFF per 400ms */
+            gpio_set(LED_STATUS_PORT, LED_STATUS_PIN);     // LED spento
+            systick_delay_ms(400);
+
+            /* Fase 4: LED ON per 200ms */
+            gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);   // LED acceso
+            systick_delay_ms(200);
         }
-        */
+        else
+        {
+            /* Finecorsa attivo: LED resta acceso fisso */
+            gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);   // LED acceso fisso
+            systick_delay_ms(100);  // Piccolo delay per ridurre frequenza polling
+        }
 
-        /* Per ora, rimaniamo in idle */
+        /* I delay usano SysTick invece di busy-wait, permettendo alla CPU
+         * di andare in sleep (WFI) durante l'attesa, riducendo il consumo */
     }
 
     /* Nota: questo punto non viene mai raggiunto perché il while(1) è infinito */

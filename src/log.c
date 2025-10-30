@@ -89,6 +89,11 @@ typedef struct {
  */
 static log_buffer_t log_buffer __attribute__((section(".log_buffer")));
 
+
+void * log_site(void){
+	return &log_buffer;
+}
+
 /* Dimensione effettiva dell'area dati (escludendo la struttura di controllo) */
 #define LOG_DATA_SIZE   (sizeof(log_buffer.data))
 

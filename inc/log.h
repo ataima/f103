@@ -261,6 +261,13 @@ int log_info(const char *fmt, ...);
  */
 int log_debug(const char *fmt, ...);
 
+/**
+ *  @brief ritorna il puntatore alla memoria di log
+ *  @retvial ...  void all'area del log
+ */
+
+void * log_site(void);
+
 /* =============================================================================
  * NOTE DI UTILIZZO
  * =============================================================================

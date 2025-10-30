@@ -53,6 +53,9 @@ set (PROJECT_SOURCES
 	src/log.c
 	src/itm.c
 	src/uart.c
+	src/gpio.c
+	src/systick.c
+	src/test.c
 	src/utils.c
 	src/syscalls.c
 	src/sysmem.c

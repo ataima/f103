@@ -115,6 +115,13 @@
 #define GPIOD_BASE            (APB2PERIPH_BASE + 0x1400UL)
 #define GPIOE_BASE            (APB2PERIPH_BASE + 0x1800UL)
 
+/* Puntatori GPIO per accesso diretto ai registri */
+#define GPIOA                 ((volatile u32 *)GPIOA_BASE)
+#define GPIOB                 ((volatile u32 *)GPIOB_BASE)
+#define GPIOC                 ((volatile u32 *)GPIOC_BASE)
+#define GPIOD                 ((volatile u32 *)GPIOD_BASE)
+#define GPIOE                 ((volatile u32 *)GPIOE_BASE)
+
 /* ADC */
 #define ADC1_BASE             (APB2PERIPH_BASE + 0x2400UL)
 #define ADC2_BASE             (APB2PERIPH_BASE + 0x2800UL)
