@@ -25,6 +25,7 @@ f103/
 │   ├── uart.h                 # UART console API
 │   ├── gpio.h                 # GPIO configuration API (CNC controller)
 │   ├── systick.h              # SysTick system timer API
+│   ├── test.h                 # Hardware test functions
 │   └── utils.h                # Utility functions
 ├── src/                        # Source files
 │   ├── main.c                 # Main application
@@ -34,6 +35,7 @@ f103/
 │   ├── uart.c                 # UART console support
 │   ├── gpio.c                 # GPIO configuration (CNC controller)
 │   ├── systick.c              # SysTick system timer
+│   ├── test.c                 # Hardware test implementations
 │   ├── utils.c                # Utility functions
 │   ├── syscalls.c             # Semihosting support
 │   └── sysmem.c               # Memory management
@@ -89,22 +91,23 @@ make -C Release -j
 The output is `Debug/f103.elf` or `Release/f103.elf`.
 
 **Typical binary sizes (Debug build):**
-- Flash (text): ~11.2 KB (11176 bytes)
+- Flash (text): ~11.7 KB (11956 bytes)
   - System initialization and drivers
-  - Includes: clock, GPIO, SysTick, UART, ITM, logging
-- Data: 4 bytes (initialized variables)
-- RAM (bss): ~4 KB (4036 bytes)
+  - Includes: clock, GPIO, SysTick, UART, ITM, logging, hardware tests
+- Data: 8 bytes (initialized variables)
+- RAM (bss): ~4 KB (4040 bytes)
   - 2 KB dedicated log buffer (0x20004800)
   - SysTick tick counter and statistics (~16 bytes)
+  - Test module state variables (~24 bytes)
   - Other uninitialized variables
-- **Total:** ~15.2 KB
+- **Total:** ~16 KB
 
-**Flash usage:** ~17% of 64 KB available
+**Flash usage:** ~18.4% of 64 KB available
 **RAM usage:** ~20% of 20 KB available
 
 ### Adding New Source Files
 
-Edit `CMakeLists.txt` and add files to the `PROJECT_SOURCES` variable (lines 48-61).
+Edit `CMakeLists.txt` and add files to the `PROJECT_SOURCES` variable (lines 48-62).
 
 ## Architecture
 
@@ -183,20 +186,55 @@ A **thread-safe circular buffer** logging system with dedicated RAM allocation:
 5. `gpio_init_all()` - Initialize all GPIO for CNC controller
 6. `systick_init()` - Initialize SysTick timer for 1ms system tick
 7. `uart_init()` - Initialize UART3 console (115200 baud, PB10=TX, PB11=RX)
-8. Main loop with LED status blink pattern
+8. Main loop with hardware tests and LED status blink pattern
 
 **Main loop behavior:**
-The main loop implements a recognizable LED blink pattern on PC13 (built-in LED):
-- **Pattern:** 200ms OFF → 400ms ON → 400ms OFF → 200ms ON (1200ms cycle)
-- **Purpose:** Visual indication that system is running and initialized correctly
-- **LED:** Active LOW (0=ON, 1=OFF)
-- **Timing:** Uses `systick_delay_ms()` for precise delays (instead of busy-wait loops)
+The main loop executes hardware tests (if enabled) and manages the LED status indicator:
 
-This pattern is distinctive and allows quick visual verification that:
+```c
+int limit_active = 0;
+
+while(1) {
+    // Execute enabled hardware tests
+    EVAL_TEST_LIMIT(limit_active = test_limit();)
+    EVAL_TEST_STEP_IO(limit_active = test_step_io();)
+    EVAL_TEST_DIR_IO(limit_active = test_dir_io();)
+    EVAL_TEST_ENABLE_IO(limit_active = test_enable_io();)
+
+    if (!limit_active) {
+        // Normal LED blink pattern: 200ms OFF → 400ms ON → 400ms OFF → 200ms ON
+        gpio_set(LED_STATUS_PORT, LED_STATUS_PIN);     // OFF
+        systick_delay_ms(200);
+        gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);   // ON
+        systick_delay_ms(400);
+        gpio_set(LED_STATUS_PORT, LED_STATUS_PIN);     // OFF
+        systick_delay_ms(400);
+        gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);   // ON
+        systick_delay_ms(200);
+    } else {
+        // Test detected issue: LED stays ON continuously
+        gpio_reset(LED_STATUS_PORT, LED_STATUS_PIN);
+        systick_delay_ms(100);
+    }
+}
+```
+
+**LED Status Indicator (PC13):**
+- **Normal operation:** Recognizable blink pattern (1200ms cycle)
+- **Test failure:** LED stays ON continuously
+- **LED type:** Active LOW (0=ON, 1=OFF)
+- **Timing:** Uses `systick_delay_ms()` for precise delays
+
+The `limit_active` variable serves dual purpose:
+1. Controls LED behavior based on test results
+2. Will be used for future state machine implementation
+
+This pattern allows quick visual verification that:
 - The firmware is running
 - The clock is configured correctly
 - GPIO initialization succeeded
 - SysTick timer is working correctly
+- All enabled hardware tests are passing
 
 ### GPIO Configuration (src/gpio.c, inc/gpio.h)
 
@@ -365,6 +403,177 @@ u32 uptime_sec = uptime_ms / 1000;
 - Replaces busy-wait loops with efficient timer-based delays
 - Tick counter wraps at 2^32 - 1, but subtraction handles this correctly
 - For sub-millisecond timing, use `systick_get_hw_counter()` (13.9ns resolution @ 72MHz)
+
+### Hardware Test Framework (src/test.c, inc/test.h)
+
+**Modular hardware validation system with conditional compilation:**
+
+The test framework provides automated validation of CNC controller hardware through loopback and functional tests. Tests can be individually enabled/disabled via macros in `test.h` for zero overhead when not needed.
+
+**Architecture:**
+
+*Conditional Compilation Pattern:*
+Each test has a corresponding `ENABLE_TEST_*` macro and `EVAL_TEST_*()` wrapper:
+
+```c
+// In test.h
+#define ENABLE_TEST_STEP_IO    1  // Enable test
+
+#if ENABLE_TEST_STEP_IO
+#define EVAL_TEST_STEP_IO(MSG)  MSG  // Include code
+bool test_step_io(void);
+#else
+#define EVAL_TEST_STEP_IO(MSG)  /* Remove code */
+#endif
+```
+
+Usage in main loop:
+```c
+int limit_active = 0;
+EVAL_TEST_STEP_IO(limit_active = test_step_io();)  // Entire statement removed if disabled
+```
+
+**Benefits:**
+- Clean code without scattered `#if/#endif` blocks
+- Zero code/RAM overhead when disabled
+- Easy to enable/disable tests for different build configurations
+- Statement entirely removed from preprocessed code (not just skipped)
+
+**Available Tests:**
+
+**1. test_limit() - Limit Switch Functional Test**
+- **Macro:** `ENABLE_TEST_LIMIT` (currently disabled, test completed)
+- **Purpose:** Verify all 6 limit switches (X/Y/Z MIN/MAX) respond correctly
+- **Method:**
+  - Monitors all limit switch inputs continuously
+  - Detects and logs edge transitions (pressed/released)
+  - Uses internal pull-up resistors (active LOW)
+- **Pass criteria:** All switches toggle correctly when pressed
+- **Failure indication:** No failures (logs events only)
+- **Returns:** `true` if any switch is currently pressed (stops LED)
+
+**2. test_step_io() - STEP Pin Loopback Test**
+- **Macro:** `ENABLE_TEST_STEP_IO` (currently enabled)
+- **Purpose:** Verify STEP output pins can drive signals correctly
+- **Method:** Loopback testing with external jumper wires
+  - Toggles STEP_X/Y/Z outputs every 500ms
+  - Reads back on X/Y/Z_MIN inputs
+  - Accounts for pull-up inversion: `expected = !output`
+- **Hardware setup required:**
+  - PA0 (STEP_X) → PB8 (X_MIN)
+  - PA1 (STEP_Y) → PA2 (Y_MIN)
+  - PB0 (STEP_Z) → PA4 (Z_MIN)
+- **Pass criteria:** Input reads match inverted output state
+- **Failure indication:** Logs error, stops LED
+- **Returns:** `true` if mismatch detected
+
+**3. test_dir_io() - DIR Pin Loopback Test**
+- **Macro:** `ENABLE_TEST_DIR_IO` (currently disabled)
+- **Purpose:** Verify DIR output pins can drive signals correctly
+- **Method:** Same as test_step_io() but for DIR pins
+- **Hardware setup required:**
+  - PB12 (DIR_X) → PB9 (X_MAX)
+  - PB13 (DIR_Y) → PA3 (Y_MAX)
+  - PB14 (DIR_Z) → PA5 (Z_MAX)
+- **Pass criteria:** Input reads match inverted output state
+- **Failure indication:** Logs error, stops LED
+- **Returns:** `true` if mismatch detected
+
+**4. test_enable_io() - ENABLE Pin Loopback Test**
+- **Macro:** `ENABLE_TEST_ENABLE_IO` (currently disabled)
+- **Purpose:** Verify ENABLE output pins can drive signals correctly
+- **Method:** Same as test_step_io() but for ENABLE pins
+- **Hardware setup required:**
+  - PB3 (ENABLE_X) → PA6 (ENC_X_A)
+  - PB4 (ENABLE_Y) → PB6 (ENC_Y_A)
+  - PB5 (ENABLE_Z) → PA8 (ENC_Z_A)
+- **Pass criteria:** Input reads match inverted output state
+- **Failure indication:** Logs error, stops LED
+- **Returns:** `true` if mismatch detected
+
+**Test Implementation Details:**
+
+All loopback tests follow this pattern:
+```c
+bool test_step_io(void) {
+    static bool first_run = true;
+    static u32 last_toggle_time = 0;
+    static bool output_state = false;
+    bool mismatch_detected = false;
+
+    // Print instructions on first run
+    if (first_run) {
+        log_info("=== Test STEP I/O Attivo ===");
+        log_info("Collega: PA0->PB8, PA1->PA2, PB0->PA4");
+        first_run = false;
+    }
+
+    // Toggle outputs every 500ms
+    if (systick_timeout(last_toggle_time, 500)) {
+        output_state = !output_state;
+        // Set/reset GPIO outputs...
+        last_toggle_time = systick_get_tick();
+    }
+
+    systick_delay_ms(10);  // Signal stabilization
+
+    // Read inputs and verify (accounting for pull-up inversion)
+    bool expected_input = !output_state;
+    if (input_read != expected_input) {
+        log_error("Mismatch detected!");
+        mismatch_detected = true;
+    }
+
+    return mismatch_detected;
+}
+```
+
+**Key Features:**
+- **Edge detection:** test_limit() only logs transitions (not continuous state)
+- **Debouncing:** 10ms delay after output change for signal stabilization
+- **Pull-up awareness:** All inputs have internal pull-ups, so HIGH output → LOW input when connected
+- **Non-blocking:** Uses `systick_timeout()` for timing without blocking
+- **First-run init:** Prints instructions once at test start
+- **Visual feedback:** LED stops blinking when test fails/detects active condition
+
+**Usage Example:**
+
+```c
+// Enable desired tests in test.h
+#define ENABLE_TEST_STEP_IO    1
+#define ENABLE_TEST_DIR_IO     0
+#define ENABLE_TEST_ENABLE_IO  0
+
+// In main.c
+int limit_active = 0;
+while(1) {
+    EVAL_TEST_STEP_IO(limit_active = test_step_io();)
+
+    if (!limit_active) {
+        // Normal LED pattern
+    } else {
+        // LED stays on - test failed or condition detected
+    }
+}
+```
+
+**Testing Workflow:**
+
+1. Enable one test at a time in `test.h`
+2. Build and flash firmware
+3. Connect required jumper wires for loopback
+4. Power on - LED should blink normally if test passes
+5. Monitor ITM/UART console for detailed status
+6. If LED stops: check console for error messages
+7. Once test passes, disable it and move to next test
+
+**Important Notes:**
+- Only enable ONE loopback test at a time (pins conflict)
+- Loopback tests require external wire connections
+- Pull-up resistors are active on all input pins (~40kΩ)
+- Test functions use static variables to maintain state between calls
+- All tests are non-blocking and designed for continuous execution in main loop
+- LED behavior provides instant visual feedback without console
 
 ### ITM Console Support (src/itm.c, inc/itm.h)
 

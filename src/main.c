@@ -270,10 +270,14 @@ int main(void)
          * TEST HARDWARE
          * =====================================================================
          * Esegue i test hardware abilitati (controllati da macro in test.h).
-         * Se un test rileva un problema (es. finecorsa attivo), il LED si ferma.
+         * Se un test rileva un problema (es. finecorsa attivo, mismatch I/O),
+         * il LED si ferma.
          */
 
         EVAL_TEST_LIMIT(limit_active = test_limit();)
+        EVAL_TEST_STEP_IO(limit_active = test_step_io();)
+        EVAL_TEST_DIR_IO(limit_active = test_dir_io();)
+        EVAL_TEST_ENABLE_IO(limit_active = test_enable_io();)
 
         /* =====================================================================
          * PATTERN LED STATO
