@@ -36,7 +36,7 @@
 #define LOG_ERROR_TRUNCATED     -5      /* Messaggio troncato per lunghezza eccessiva */
 
 
-#define ENABLE_LOG 1
+
 
 #if ENABLE_LOG
 
@@ -328,9 +328,17 @@ void * log_site(void);
 #define log_error(FMT,...)
 #define log_warning(FMT,...)
 #define log_info(FMT,...)
+#define log_clear()
 #define log_debug(FMT,...)
 #define log_init()   0
 #endif /* ENABLE_LOG */
+
+
+#if ENABLE_LOG
+#define EVAL_LOG(MSG)	MSG
+#else
+#define EVAL_LOG(MSG)
+#endif
 
 
 #endif /* LOG_H_ */

@@ -125,4 +125,7 @@ static inline void __enable_irq(void) {
  * ============================================================================= */
 #include "stm32f103_regs.h"
 
+#define ENABLE_LOG 1
+
+
 #endif /* COMMON_H_ */

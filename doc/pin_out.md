@@ -1,4 +1,4 @@
-# STM32F103C8T6 (Blue Pill) - Tabella GPIO CNC 3 Assi
+/# STM32F103C8T6 (Blue Pill) - Tabella GPIO CNC 3 Assi
 ## Pinout SENZA CONFLITTI - PC13 Libero per LED
 
 ## 📋 TABELLA CONNESSIONI COMPLETE

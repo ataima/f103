@@ -432,6 +432,17 @@
 #define NVIC_IPR(n)           (*(volatile u32 *)(NVIC_BASE + 0x300 + (n) * 4))
 
 /* =============================================================================
+ * IRQ Numbers (STM32F103C8T6)
+ * ============================================================================= */
+typedef enum {
+    TIM2_IRQn = 28,
+    EXTI2_IRQn = 8,
+    EXTI3_IRQn = 9,
+    EXTI4_IRQn = 10,
+    EXTI9_5_IRQn = 23
+} IRQn_Type;
+
+/* =============================================================================
  * SCB - SYSTEM CONTROL BLOCK
  * ============================================================================= */
 
@@ -447,5 +458,182 @@
 #define SCB_SHPR2             (*(volatile u32 *)(SCB_BASE + 0x1C))  /* System Handler Priority 2 */
 #define SCB_SHPR3             (*(volatile u32 *)(SCB_BASE + 0x20))  /* System Handler Priority 3 */
 #define SCB_SHCSR             (*(volatile u32 *)(SCB_BASE + 0x24))  /* System Handler Control/State */
+
+/* NVIC Helper Functions */
+static inline void NVIC_EnableIRQ(int IRQn) {
+    NVIC_ISER0 |= (1UL << ((u32)IRQn & 0x1FUL));
+}
+
+static inline void NVIC_DisableIRQ(int IRQn) {
+    NVIC_ICER0 |= (1UL << ((u32)IRQn & 0x1FUL));
+}
+
+static inline void NVIC_SetPriority(int IRQn, u32 priority) {
+    volatile u8 *ipr = (volatile u8 *)(NVIC_BASE + 0x300);
+    ipr[IRQn] = (u8)((priority << 4) & 0xFFUL);
+}
+
+static inline void NVIC_SetPriorityGrouping(u32 PriorityGroup) {
+    u32 reg = SCB_AIRCR;
+    u32 PriorityGroupTmp = (PriorityGroup & 0x07UL);
+    reg = (reg & ~(0xFFFFUL << 16)) | (0x5FAUL << 16) | (PriorityGroupTmp << 8);
+    SCB_AIRCR = reg;
+}
+
+static inline u32 NVIC_EncodePriority(u32 PriorityGroup, u32 PreemptPriority, u32 SubPriority) {
+    u32 PriorityGroupTmp = (PriorityGroup & 0x07UL);
+    u32 PreemptPriorityBits = ((7UL - PriorityGroupTmp) > 4UL) ? 4UL : (7UL - PriorityGroupTmp);
+    u32 SubPriorityBits = ((PriorityGroupTmp + 4UL) < 7UL) ? 0UL : ((PriorityGroupTmp - 7UL) + 4UL);
+    return ((PreemptPriority & ((1UL << PreemptPriorityBits) - 1UL)) << SubPriorityBits) |
+           ((SubPriority & ((1UL << SubPriorityBits) - 1UL)));
+}
+
+/* =============================================================================
+ * AFIO - ALTERNATE FUNCTION I/O
+ * ============================================================================= */
+
+/* AFIO External Interrupt Configuration Registers */
+#define AFIO_EXTICR1          (*(volatile u32 *)(AFIO_BASE + 0x08))
+#define AFIO_EXTICR2          (*(volatile u32 *)(AFIO_BASE + 0x0C))
+#define AFIO_EXTICR3          (*(volatile u32 *)(AFIO_BASE + 0x10))
+#define AFIO_EXTICR4          (*(volatile u32 *)(AFIO_BASE + 0x14))
+
+/* =============================================================================
+ * EXTI - EXTERNAL INTERRUPT/EVENT CONTROLLER
+ * ============================================================================= */
+
+#define EXTI_IMR              (*(volatile u32 *)(EXTI_BASE + 0x00))  /* Interrupt Mask Register */
+#define EXTI_EMR              (*(volatile u32 *)(EXTI_BASE + 0x04))  /* Event Mask Register */
+#define EXTI_RTSR             (*(volatile u32 *)(EXTI_BASE + 0x08))  /* Rising Trigger Selection */
+#define EXTI_FTSR             (*(volatile u32 *)(EXTI_BASE + 0x0C))  /* Falling Trigger Selection */
+#define EXTI_SWIER            (*(volatile u32 *)(EXTI_BASE + 0x10))  /* Software Interrupt Event */
+#define EXTI_PR               (*(volatile u32 *)(EXTI_BASE + 0x14))  /* Pending Register */
+
+/* =============================================================================
+ * TIM2 - GENERAL PURPOSE TIMER 2
+ * ============================================================================= */
+
+#define TIM2_CR1              (*(volatile u32 *)(TIM2_BASE + 0x00))  /* Control Register 1 */
+#define TIM2_CR2              (*(volatile u32 *)(TIM2_BASE + 0x04))  /* Control Register 2 */
+#define TIM2_SMCR             (*(volatile u32 *)(TIM2_BASE + 0x08))  /* Slave Mode Control */
+#define TIM2_DIER             (*(volatile u32 *)(TIM2_BASE + 0x0C))  /* DMA/Interrupt Enable */
+#define TIM2_SR               (*(volatile u32 *)(TIM2_BASE + 0x10))  /* Status Register */
+#define TIM2_EGR              (*(volatile u32 *)(TIM2_BASE + 0x14))  /* Event Generation */
+#define TIM2_CCMR1            (*(volatile u32 *)(TIM2_BASE + 0x18))  /* Capture/Compare Mode 1 */
+#define TIM2_CCMR2            (*(volatile u32 *)(TIM2_BASE + 0x1C))  /* Capture/Compare Mode 2 */
+#define TIM2_CCER             (*(volatile u32 *)(TIM2_BASE + 0x20))  /* Capture/Compare Enable */
+#define TIM2_CNT              (*(volatile u32 *)(TIM2_BASE + 0x24))  /* Counter */
+#define TIM2_PSC              (*(volatile u32 *)(TIM2_BASE + 0x28))  /* Prescaler */
+#define TIM2_ARR              (*(volatile u32 *)(TIM2_BASE + 0x2C))  /* Auto-Reload Register */
+#define TIM2_CCR1             (*(volatile u32 *)(TIM2_BASE + 0x34))  /* Capture/Compare 1 */
+#define TIM2_CCR2             (*(volatile u32 *)(TIM2_BASE + 0x38))  /* Capture/Compare 2 */
+#define TIM2_CCR3             (*(volatile u32 *)(TIM2_BASE + 0x3C))  /* Capture/Compare 3 */
+#define TIM2_CCR4             (*(volatile u32 *)(TIM2_BASE + 0x40))  /* Capture/Compare 4 */
+#define TIM2_DCR              (*(volatile u32 *)(TIM2_BASE + 0x48))  /* DMA Control */
+#define TIM2_DMAR             (*(volatile u32 *)(TIM2_BASE + 0x4C))  /* DMA Address */
+
+/* TIM_CR1 bits */
+#define TIM_CR1_CEN           BIT(0)   /* Counter Enable */
+#define TIM_CR1_UDIS          BIT(1)   /* Update Disable */
+#define TIM_CR1_URS           BIT(2)   /* Update Request Source */
+#define TIM_CR1_OPM           BIT(3)   /* One Pulse Mode */
+#define TIM_CR1_DIR           BIT(4)   /* Direction */
+#define TIM_CR1_CMS_POS       5        /* Center-aligned Mode Selection */
+#define TIM_CR1_ARPE          BIT(7)   /* Auto-Reload Preload Enable */
+
+/* TIM_DIER bits */
+#define TIM_DIER_UIE          BIT(0)   /* Update Interrupt Enable */
+#define TIM_DIER_CC1IE        BIT(1)   /* Capture/Compare 1 Interrupt Enable */
+#define TIM_DIER_CC2IE        BIT(2)   /* Capture/Compare 2 Interrupt Enable */
+#define TIM_DIER_CC3IE        BIT(3)   /* Capture/Compare 3 Interrupt Enable */
+#define TIM_DIER_CC4IE        BIT(4)   /* Capture/Compare 4 Interrupt Enable */
+
+/* TIM_SR bits */
+#define TIM_SR_UIF            BIT(0)   /* Update Interrupt Flag */
+#define TIM_SR_CC1IF          BIT(1)   /* Capture/Compare 1 Interrupt Flag */
+#define TIM_SR_CC2IF          BIT(2)   /* Capture/Compare 2 Interrupt Flag */
+#define TIM_SR_CC3IF          BIT(3)   /* Capture/Compare 3 Interrupt Flag */
+#define TIM_SR_CC4IF          BIT(4)   /* Capture/Compare 4 Interrupt Flag */
+
+/* TIM_SMCR bits (Slave Mode Control Register) */
+#define TIM_SMCR_SMS_POS      0        /* Slave Mode Selection */
+#define TIM_SMCR_SMS_ENCODER1 (0x1UL << TIM_SMCR_SMS_POS)  /* Encoder mode 1 */
+#define TIM_SMCR_SMS_ENCODER2 (0x2UL << TIM_SMCR_SMS_POS)  /* Encoder mode 2 */
+#define TIM_SMCR_SMS_ENCODER3 (0x3UL << TIM_SMCR_SMS_POS)  /* Encoder mode 3 (both edges) */
+
+/* TIM_CCER bits (Capture/Compare Enable Register) */
+#define TIM_CCER_CC1E         BIT(0)   /* Capture/Compare 1 output enable */
+#define TIM_CCER_CC1P         BIT(1)   /* Capture/Compare 1 polarity */
+#define TIM_CCER_CC2E         BIT(4)   /* Capture/Compare 2 output enable */
+#define TIM_CCER_CC2P         BIT(5)   /* Capture/Compare 2 polarity */
+
+/* TIM_CCMR1 bits (Capture/Compare Mode Register 1) - Input mode */
+#define TIM_CCMR1_CC1S_POS    0        /* CC1 channel configured as input */
+#define TIM_CCMR1_CC1S_TI1    (0x1UL << TIM_CCMR1_CC1S_POS)  /* CC1 = TI1 */
+#define TIM_CCMR1_CC2S_POS    8        /* CC2 channel configured as input */
+#define TIM_CCMR1_CC2S_TI2    (0x1UL << TIM_CCMR1_CC2S_POS)  /* CC2 = TI2 */
+
+/* =============================================================================
+ * TIM1 - ADVANCED TIMER 1 (for Encoder Z)
+ * ============================================================================= */
+
+#define TIM1_CR1              (*(volatile u32 *)(TIM1_BASE + 0x00))  /* Control Register 1 */
+#define TIM1_CR2              (*(volatile u32 *)(TIM1_BASE + 0x04))  /* Control Register 2 */
+#define TIM1_SMCR             (*(volatile u32 *)(TIM1_BASE + 0x08))  /* Slave Mode Control */
+#define TIM1_DIER             (*(volatile u32 *)(TIM1_BASE + 0x0C))  /* DMA/Interrupt Enable */
+#define TIM1_SR               (*(volatile u32 *)(TIM1_BASE + 0x10))  /* Status Register */
+#define TIM1_EGR              (*(volatile u32 *)(TIM1_BASE + 0x14))  /* Event Generation */
+#define TIM1_CCMR1            (*(volatile u32 *)(TIM1_BASE + 0x18))  /* Capture/Compare Mode 1 */
+#define TIM1_CCMR2            (*(volatile u32 *)(TIM1_BASE + 0x1C))  /* Capture/Compare Mode 2 */
+#define TIM1_CCER             (*(volatile u32 *)(TIM1_BASE + 0x20))  /* Capture/Compare Enable */
+#define TIM1_CNT              (*(volatile u32 *)(TIM1_BASE + 0x24))  /* Counter */
+#define TIM1_PSC              (*(volatile u32 *)(TIM1_BASE + 0x28))  /* Prescaler */
+#define TIM1_ARR              (*(volatile u32 *)(TIM1_BASE + 0x2C))  /* Auto-Reload Register */
+#define TIM1_CCR1             (*(volatile u32 *)(TIM1_BASE + 0x34))  /* Capture/Compare 1 */
+#define TIM1_CCR2             (*(volatile u32 *)(TIM1_BASE + 0x38))  /* Capture/Compare 2 */
+#define TIM1_CCR3             (*(volatile u32 *)(TIM1_BASE + 0x3C))  /* Capture/Compare 3 */
+#define TIM1_CCR4             (*(volatile u32 *)(TIM1_BASE + 0x40))  /* Capture/Compare 4 */
+
+/* =============================================================================
+ * TIM3 - GENERAL PURPOSE TIMER 3 (for Encoder X)
+ * ============================================================================= */
+
+#define TIM3_CR1              (*(volatile u32 *)(TIM3_BASE + 0x00))  /* Control Register 1 */
+#define TIM3_CR2              (*(volatile u32 *)(TIM3_BASE + 0x04))  /* Control Register 2 */
+#define TIM3_SMCR             (*(volatile u32 *)(TIM3_BASE + 0x08))  /* Slave Mode Control */
+#define TIM3_DIER             (*(volatile u32 *)(TIM3_BASE + 0x0C))  /* DMA/Interrupt Enable */
+#define TIM3_SR               (*(volatile u32 *)(TIM3_BASE + 0x10))  /* Status Register */
+#define TIM3_EGR              (*(volatile u32 *)(TIM3_BASE + 0x14))  /* Event Generation */
+#define TIM3_CCMR1            (*(volatile u32 *)(TIM3_BASE + 0x18))  /* Capture/Compare Mode 1 */
+#define TIM3_CCMR2            (*(volatile u32 *)(TIM3_BASE + 0x1C))  /* Capture/Compare Mode 2 */
+#define TIM3_CCER             (*(volatile u32 *)(TIM3_BASE + 0x20))  /* Capture/Compare Enable */
+#define TIM3_CNT              (*(volatile u32 *)(TIM3_BASE + 0x24))  /* Counter */
+#define TIM3_PSC              (*(volatile u32 *)(TIM3_BASE + 0x28))  /* Prescaler */
+#define TIM3_ARR              (*(volatile u32 *)(TIM3_BASE + 0x2C))  /* Auto-Reload Register */
+#define TIM3_CCR1             (*(volatile u32 *)(TIM3_BASE + 0x34))  /* Capture/Compare 1 */
+#define TIM3_CCR2             (*(volatile u32 *)(TIM3_BASE + 0x38))  /* Capture/Compare 2 */
+#define TIM3_CCR3             (*(volatile u32 *)(TIM3_BASE + 0x3C))  /* Capture/Compare 3 */
+#define TIM3_CCR4             (*(volatile u32 *)(TIM3_BASE + 0x40))  /* Capture/Compare 4 */
+
+/* =============================================================================
+ * TIM4 - GENERAL PURPOSE TIMER 4 (for Encoder Y)
+ * ============================================================================= */
+
+#define TIM4_CR1              (*(volatile u32 *)(TIM4_BASE + 0x00))  /* Control Register 1 */
+#define TIM4_CR2              (*(volatile u32 *)(TIM4_BASE + 0x04))  /* Control Register 2 */
+#define TIM4_SMCR             (*(volatile u32 *)(TIM4_BASE + 0x08))  /* Slave Mode Control */
+#define TIM4_DIER             (*(volatile u32 *)(TIM4_BASE + 0x0C))  /* DMA/Interrupt Enable */
+#define TIM4_SR               (*(volatile u32 *)(TIM4_BASE + 0x10))  /* Status Register */
+#define TIM4_EGR              (*(volatile u32 *)(TIM4_BASE + 0x14))  /* Event Generation */
+#define TIM4_CCMR1            (*(volatile u32 *)(TIM4_BASE + 0x18))  /* Capture/Compare Mode 1 */
+#define TIM4_CCMR2            (*(volatile u32 *)(TIM4_BASE + 0x1C))  /* Capture/Compare Mode 2 */
+#define TIM4_CCER             (*(volatile u32 *)(TIM4_BASE + 0x20))  /* Capture/Compare Enable */
+#define TIM4_CNT              (*(volatile u32 *)(TIM4_BASE + 0x24))  /* Counter */
+#define TIM4_PSC              (*(volatile u32 *)(TIM4_BASE + 0x28))  /* Prescaler */
+#define TIM4_ARR              (*(volatile u32 *)(TIM4_BASE + 0x2C))  /* Auto-Reload Register */
+#define TIM4_CCR1             (*(volatile u32 *)(TIM4_BASE + 0x34))  /* Capture/Compare 1 */
+#define TIM4_CCR2             (*(volatile u32 *)(TIM4_BASE + 0x38))  /* Capture/Compare 2 */
+#define TIM4_CCR3             (*(volatile u32 *)(TIM4_BASE + 0x3C))  /* Capture/Compare 3 */
+#define TIM4_CCR4             (*(volatile u32 *)(TIM4_BASE + 0x40))  /* Capture/Compare 4 */
 
 #endif /* STM32F103_REGS_H_ */

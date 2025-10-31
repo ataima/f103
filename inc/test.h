@@ -61,7 +61,7 @@
  *          - PB4 (ENABLE_Y) → PB6 (ENC_Y_A)
  *          - PB5 (ENABLE_Z) → PA8 (ENC_Z_A)
  */
-#define ENABLE_TEST_ENABLE_IO   1
+#define ENABLE_TEST_ENABLE_IO   0
 
 
 /* ============================================================================
@@ -97,6 +97,42 @@
 #define EVAL_TEST_ENABLE_IO(MSG)        MSG
 #else
 #define EVAL_TEST_ENABLE_IO(MSG)        /* Niente - codice rimosso dal preprocessore */
+#endif
+
+
+
+
+
+/* ============================================================================
+ * CONFIGURAZIONE TEST
+ * ============================================================================
+ */
+
+/**
+ * @brief Abilita test movimento Bresenham 3D
+ * @details Se impostato a 1, esegue un movimento di test prima del main loop.
+ *          Movimento: da (0,0,0) a (500,300,200) con profilo trapezoidale.
+ *          Log posizione ogni 100 step.
+ */
+#define ENABLE_BRESENHAM_TEST   1
+
+#if ENABLE_BRESENHAM_TEST
+#define EVAL_TEST_BRESENHAM(MSG)        MSG
+#else
+#define EVAL_TEST_BRESENHAM(MSG)        /* Niente - codice rimosso dal preprocessore */
+#endif
+
+
+
+/**
+ * @brief Test movimento 3D con algoritmo Bresenham
+ * @details Esegue un movimento lineare 3D da origine a (500,300,200).
+ *          Applica profilo velocità trapezoidale 500Hz-5000Hz.
+ *          Logga posizione ogni 100 step (gestito da cnc_execute_moves).
+ */
+
+#if ENABLE_BRESENHAM_TEST
+void test_bresenham_movement(void);
 #endif
 
 

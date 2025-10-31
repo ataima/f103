@@ -5,7 +5,7 @@
  * @author         : STM32F103 Project
  ******************************************************************************
  */
-
+#include "common.h"
 #include "utils.h"
 #include <stdarg.h>  /* Per va_list, va_start, va_arg, va_end */
 

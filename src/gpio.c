@@ -13,7 +13,7 @@
  * NOTA: Le configurazioni seguono il manuale di riferimento STM32F103C8T6.
  *       Ogni registro GPIO viene scritto direttamente senza HAL/SPL.
  */
-
+#include "common.h"
 #include "gpio.h"
 #include "log.h"
 

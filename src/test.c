@@ -5,10 +5,11 @@
  * Questo modulo implementa funzioni di test per verificare il corretto
  * funzionamento dei componenti hardware del controller CNC.
  */
-
+#include "common.h"
 #include "test.h"
 #include "gpio.h"
 #include "log.h"
+#include "cnc.h"
 #include "systick.h"
 
 /* ============================================================================
@@ -387,3 +388,72 @@ bool test_enable_io(void)
 }
 
 #endif /* ENABLE_TEST_ENABLE_IO */
+
+
+
+/* ============================================================================
+ * FUNZIONI DI TEST
+ * ============================================================================
+ */
+
+#if ENABLE_BRESENHAM_TEST
+
+/**
+ * @brief Test movimento 3D con algoritmo Bresenham
+ * @details Esegue un movimento lineare 3D da origine a (500,300,200).
+ *          Applica profilo velocità trapezoidale 500Hz-5000Hz.
+ *          Logga posizione ogni 100 step (gestito da cnc_execute_moves).
+ */
+void test_bresenham_movement(void)
+{
+    log_clear();
+    log_info("=== TEST MOVIMENTO BRESENHAM 3D ===");
+
+    /* Buffer comandi (statico per evitare stack overflow) */
+    static axis_move_t moves_buffer[MAX_MOVE_BUFFER];
+
+    /* Definisci traiettoria: da (0,0,0) a (500,300,200) */
+    point3d_t start = {0, 0, 0};
+    point3d_t end = {500, 300, 200};
+
+    log_info("Start: (%d,%d,%d)", start.x, start.y, start.z);
+    log_info("End: (%d,%d,%d)", end.x, end.y, end.z);
+
+    /* Genera traiettoria con Bresenham */
+    int move_count = cnc_bresenham_line(start, end, moves_buffer);
+
+    if (move_count <= 0) {
+        log_error("Bresenham fallito: move_count=%d", move_count);
+        return;
+    }
+
+    log_info("Comandi generati: %d", move_count);
+
+    /* Applica profilo velocità trapezoidale */
+    cnc_apply_speed_profile(moves_buffer, move_count, MIN_STEP_FREQ, MAX_STEP_FREQ);
+    log_info("Profilo velocità applicato: %u-%u Hz", MIN_STEP_FREQ, MAX_STEP_FREQ);
+
+    /* Valida traiettoria (opzionale) */
+    if (!cnc_validate_trajectory(start, end, moves_buffer, move_count)) {
+        log_error("Validazione traiettoria FALLITA!");
+        return;
+    }
+    log_info("Traiettoria validata: OK");
+
+    /* Esegui movimento (bloccante, con log ogni 100 step) */
+    log_info("Avvio esecuzione movimento...");
+    int result = cnc_execute_moves(moves_buffer, move_count);
+
+    if (result == 0) {
+        log_info("=== TEST COMPLETATO CON SUCCESSO ===");
+    } else {
+        log_error("=== TEST FALLITO: result=%d ===", result);
+    }
+
+    /* Delay prima di continuare */
+    systick_delay_ms(2000);
+    log_info("=== FINE TEST - continuando con main loop ===");
+}
+
+#endif  /* ENABLE_BRESENHAM_TEST */
+

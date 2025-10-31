@@ -170,6 +170,33 @@ u32 systick_get_hw_counter(void);
 
 
 /* ============================================================================
+ * FUNZIONI PUBBLICHE - CALLBACK ENCODER (per integrazione CNC)
+ * ============================================================================
+ */
+
+/**
+ * @brief Registra callback per lettura encoder a 50Hz
+ * @details Il callback viene invocato dal SysTick ISR ogni 20ms (50Hz).
+ *          Utile per leggere encoder senza polling nel main loop.
+ *
+ * @param callback Puntatore a funzione void(void) da chiamare ogni 20ms
+ *                 Impostare a NULL per disabilitare callback
+ *
+ * @note Il callback viene eseguito in contesto interrupt (ISR)!
+ * @note Il callback deve essere VELOCE (pochi µs) per non degradare timing
+ * @note NON usare logging o operazioni pesanti nel callback
+ *
+ * @example
+ * void encoder_update_callback(void) {
+ *     // Lettura encoder veloce
+ *     cnc_update_encoder_positions();
+ * }
+ * systick_register_encoder_callback(encoder_update_callback);
+ */
+void systick_register_encoder_callback(void (*callback)(void));
+
+
+/* ============================================================================
  * FUNZIONI INLINE - CONVERSIONI TEMPO
  * ============================================================================
  */

@@ -55,10 +55,12 @@ set (PROJECT_SOURCES
 	src/uart.c
 	src/gpio.c
 	src/systick.c
+	src/cnc.c
 	src/test.c
 	src/utils.c
 	src/syscalls.c
 	src/sysmem.c
+	src/encoder.c
 	)
 
 set (PROJECT_DEFINES

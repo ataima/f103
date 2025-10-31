@@ -22,7 +22,7 @@
  *
  ******************************************************************************
  */
-
+#include "common.h"
 #include "uart.h"
 #include "log.h"
 #include "clock.h"

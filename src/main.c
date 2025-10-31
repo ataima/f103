@@ -24,11 +24,14 @@
 #include "uart.h"    /* Include il supporto UART per console seriale */
 #include "gpio.h"    /* Include la configurazione GPIO CNC */
 #include "systick.h" /* Include il timer di sistema SysTick */
+#include "cnc.h"     /* Include il sistema di gestione stato CNC */
 #include "test.h"    /* Include le funzioni di test hardware */
 
 #if !defined(__SOFT_FP__) && defined(__ARM_FP)
   #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 #endif
+
+
 
 
 
@@ -69,6 +72,21 @@ int main(void)
         __NOP();  /* Delay ~10ms @ 72 MHz */
     }
 
+    /* =========================================================================
+     * INIZIALIZZAZIONE DEL SISTEMA DI LOGGING
+     * =========================================================================
+     *
+     * Inizializza il buffer circolare in RAM dedicata (2KB @ 0x20004800).
+     * Il logging è thread-safe e interrupt-safe.
+     */
+
+    log_status = log_init();
+    if (log_status != LOG_OK)
+    {
+        log_error("Inizializzazione sistema log fallita!");
+        while(1);
+    }
+
     /* Verifica che la configurazione sia andata a buon fine */
     if (clock_status != CLOCK_OK)
     {
@@ -87,31 +105,18 @@ int main(void)
         /* Per ora, stampa un messaggio di errore e resta bloccato */
         if (clock_status == CLOCK_ERROR_HSE)
         {
-            strcpy(log_site(),"ERROR: HSE non si avvia! Verifica il quarzo esterno");
+            log_error("ERROR: HSE non si avvia! Verifica il quarzo esterno");
         }
         else if (clock_status == CLOCK_ERROR_PLL)
         {
-        	strcpy(log_site(),"ERRORE: PLL non fa lock! Problema di configurazione");
+        	log_error("ERRORE: PLL non fa lock! Problema di configurazione");
         }
 
         /* Loop infinito in caso di errore */
         while(1);
     }
 
-    /* =========================================================================
-     * INIZIALIZZAZIONE DEL SISTEMA DI LOGGING
-     * =========================================================================
-     *
-     * Inizializza il buffer circolare in RAM dedicata (2KB @ 0x20004800).
-     * Il logging è thread-safe e interrupt-safe.
-     */
 
-    log_status = log_init();
-    if (log_status != LOG_OK)
-    {
-        log_error("Inizializzazione sistema log fallita!");
-        while(1);
-    }
 
     /* Primo log: sistema avviato! */
     log_info("Sistema STM32F103 avviato con successo");
@@ -207,6 +212,28 @@ int main(void)
 
     log_info("SysTick inizializzato: tick a 1ms");
 
+
+    /* =========================================================================
+     * INIZIALIZZAZIONE SISTEMA CNC
+     * =========================================================================
+     *
+     * Inizializza la macchina a stati CNC e configura interrupt per emergenze:
+     * - Interrupt EXTI su finecorsa (falling edge 1→0) con priorità alta
+     * - Timer TIM2 per generazione step durante retrazione emergenza
+     * - Gestione sequenziale recupero assi dopo attivazione finecorsa
+     *
+     * IMPORTANTE: Deve essere chiamato DOPO gpio_init_all() e systick_init()
+     */
+
+    int cnc_status = cnc_init();
+    if (cnc_status != 0)
+    {
+        log_error("Inizializzazione sistema CNC fallita!");
+        while(1);
+    }
+
+    log_info("Sistema CNC inizializzato: stato=%s", cnc_get_state_name());
+
     /* =========================================================================
      * INIZIALIZZAZIONE UART (CONSOLE SERIALE)
      * =========================================================================
@@ -252,6 +279,17 @@ int main(void)
     }
 
     /* =========================================================================
+     * TEST MOVIMENTO BRESENHAM 3D
+     * =========================================================================
+     * Esegue un test di movimento prima del main loop (se abilitato).
+     * Il test genera una traiettoria lineare 3D, applica profilo velocità,
+     * e esegue il movimento loggando la posizione ogni 100 step.
+     */
+
+
+	EVAL_TEST_BRESENHAM (test_bresenham_movement();)
+
+    /* =========================================================================
      * MAIN LOOP
      * =========================================================================
      */
@@ -267,11 +305,24 @@ int main(void)
     while(1)
     {
         /* =====================================================================
+         * GESTIONE EMERGENZE CNC
+         * =====================================================================
+         * Processa la coda emergenze se ci sono assi da recuperare.
+         * Gli interrupt EXTI gestiscono l'attivazione dei finecorsa e
+         * accodano gli assi. Qui processiamo sequenzialmente il recupero.
+         */
+
+        cnc_process_emergency();
+
+        /* =====================================================================
          * TEST HARDWARE
          * =====================================================================
          * Esegue i test hardware abilitati (controllati da macro in test.h).
          * Se un test rileva un problema (es. finecorsa attivo, mismatch I/O),
          * il LED si ferma.
+         *
+         * NOTA: I test sono disabilitati quando il sistema CNC è attivo per
+         *       evitare conflitti con la gestione emergenze.
          */
 
         EVAL_TEST_LIMIT(limit_active = test_limit();)
@@ -282,11 +333,15 @@ int main(void)
         /* =====================================================================
          * PATTERN LED STATO
          * =====================================================================
-         * Il LED lampeggia con pattern riconoscibile solo se nessun test
-         * sta bloccando il sistema (es. nessun finecorsa premuto).
+         * Il LED indica lo stato del sistema:
+         * - Pattern lampeggio: sistema operativo normale (ST_IDLE)
+         * - LED fisso ON: test attivo o emergenza in corso
+         * - LED lampeggio rapido: emergenza risolta, attesa conferma
          */
 
-        if (!limit_active)
+        cnc_state_t state = cnc_get_state();
+
+        if (!limit_active && state == ST_IDLE)
         {
             /* Pattern normale: 200ms OFF, 400ms ON, 400ms OFF, 200ms ON */
 

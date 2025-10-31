@@ -24,8 +24,10 @@ f103/
 │   ├── itm.h                  # ITM console via SWO API
 │   ├── uart.h                 # UART console API
 │   ├── gpio.h                 # GPIO configuration API (CNC controller)
-│   ├── systick.h              # SysTick system timer API
+│   ├── systick.h              # SysTick system timer API + encoder callback
 │   ├── test.h                 # Hardware test functions
+│   ├── cnc.h                  # CNC state machine and emergency management
+│   ├── encoder.h              # Rotary encoder driver (TIM1/3/4)
 │   └── utils.h                # Utility functions
 ├── src/                        # Source files
 │   ├── main.c                 # Main application
@@ -34,8 +36,10 @@ f103/
 │   ├── itm.c                  # ITM console support
 │   ├── uart.c                 # UART console support
 │   ├── gpio.c                 # GPIO configuration (CNC controller)
-│   ├── systick.c              # SysTick system timer
+│   ├── systick.c              # SysTick system timer + encoder callback
 │   ├── test.c                 # Hardware test implementations
+│   ├── cnc.c                  # CNC state machine and emergency management
+│   ├── encoder.c              # Rotary encoder driver implementation
 │   ├── utils.c                # Utility functions
 │   ├── syscalls.c             # Semihosting support
 │   └── sysmem.c               # Memory management
@@ -91,19 +95,21 @@ make -C Release -j
 The output is `Debug/f103.elf` or `Release/f103.elf`.
 
 **Typical binary sizes (Debug build):**
-- Flash (text): ~11.7 KB (11956 bytes)
+- Flash (text): ~19.3 KB (19328 bytes)
   - System initialization and drivers
-  - Includes: clock, GPIO, SysTick, UART, ITM, logging, hardware tests
+  - Includes: clock, GPIO, SysTick, UART, ITM, logging, hardware tests, CNC state machine, encoder drivers, homing
 - Data: 8 bytes (initialized variables)
-- RAM (bss): ~4 KB (4040 bytes)
+- RAM (bss): ~4 KB (4080 bytes)
   - 2 KB dedicated log buffer (0x20004800)
   - SysTick tick counter and statistics (~16 bytes)
-  - Test module state variables (~24 bytes)
+  - CNC state machine variables (~64 bytes)
+  - Encoder positions (12 bytes)
+  - Emergency queue (40 bytes)
   - Other uninitialized variables
-- **Total:** ~16 KB
+- **Total:** ~23.4 KB
 
-**Flash usage:** ~18.4% of 64 KB available
-**RAM usage:** ~20% of 20 KB available
+**Flash usage:** ~29.8% of 64 KB available (70.2% free)
+**RAM usage:** ~20.4% of 20 KB available (79.6% free)
 
 ### Adding New Source Files
 
@@ -403,6 +409,262 @@ u32 uptime_sec = uptime_ms / 1000;
 - Replaces busy-wait loops with efficient timer-based delays
 - Tick counter wraps at 2^32 - 1, but subtraction handles this correctly
 - For sub-millisecond timing, use `systick_get_hw_counter()` (13.9ns resolution @ 72MHz)
+
+**Encoder Callback Integration (50Hz):**
+SysTick includes support for periodic callbacks to read rotary encoders:
+
+*Callback Registration:*
+- `systick_register_encoder_callback(callback)` - Register function to call every 20ms (50Hz)
+
+*Implementation:*
+- Callback invoked from SysTick ISR using a 20-tick divider (1ms → 20ms)
+- Used by CNC system to automatically read encoder positions
+- **CPU overhead:** Only 0.022% @ 72MHz (see `ANALISI_OVERHEAD_ENCODER.md`)
+
+*Usage Example:*
+```c
+void my_encoder_callback(void) {
+    // Called every 20ms from SysTick ISR
+    // Must be FAST - no logging allowed!
+    cnc_update_encoder_positions();
+}
+
+systick_register_encoder_callback(my_encoder_callback);
+```
+
+### Rotary Encoder Driver (src/encoder.c, inc/encoder.h)
+
+**Hardware-based encoder reading using TIM1/3/4 in Encoder Interface Mode:**
+
+The encoder driver configures three 16-bit timers to automatically count quadrature encoder signals, eliminating the need for software debouncing and edge detection.
+
+**Hardware Configuration:**
+- **TIM3 (APB1):** Encoder X on PA6 (CH1) / PA7 (CH2)
+- **TIM4 (APB1):** Encoder Y on PB6 (CH1) / PB7 (CH2)
+- **TIM1 (APB2):** Encoder Z on PA8 (CH1) / PA9 (CH2)
+
+**Encoder Mode:**
+- **Mode:** Encoder Interface Mode 3 (counts on both edges of both channels)
+- **Resolution:** ×4 (quadrature decoding)
+- **Range:** -32768 to +32767 (16-bit signed counter)
+- **Prescaler:** None (1:1, maximum resolution)
+- **Auto-reload:** 0xFFFF (wraps automatically)
+
+**Key Functions:**
+
+*Initialization:*
+- `encoder_init()` - Initialize all three encoder timers
+
+*Read with Reset (typical usage):*
+- `encoder_read_x()` - Read delta since last read, then reset counter to 0
+- `encoder_read_y()` - Same for Y axis
+- `encoder_read_z()` - Same for Z axis
+
+*Read without Reset:*
+- `encoder_get_count_x()` - Read current counter value without resetting
+- `encoder_get_count_y()` - Same for Y
+- `encoder_get_count_z()` - Same for Z
+
+*Manual Reset:*
+- `encoder_reset_x/y/z()` - Reset individual counter to 0
+- `encoder_reset_all()` - Reset all counters
+
+**Integration with CNC System:**
+The encoder driver is called automatically by the CNC system via SysTick callback (50Hz):
+```c
+// In cnc.c (called every 20ms by SysTick ISR)
+static void cnc_encoder_isr_callback(void) {
+    i16 delta_x = encoder_read_x();  // Read and reset
+    i16 delta_y = encoder_read_y();
+    i16 delta_z = encoder_read_z();
+
+    encoder_positions.x += (i32)delta_x;  // Update absolute positions
+    encoder_positions.y += (i32)delta_y;
+    encoder_positions.z += (i32)delta_z;
+}
+```
+
+**Usage Example (Manual):**
+```c
+encoder_init();
+
+// Periodically (e.g., 50Hz):
+i16 delta = encoder_read_x();  // Get movement since last read
+position_x += delta;            // Update absolute position
+```
+
+**Important Notes:**
+- Encoder timers count automatically in hardware - no CPU cycles needed!
+- The `encoder_read_x/y/z()` functions read AND reset in one atomic operation
+- 16-bit range is sufficient for 50Hz sampling (max ±32k pulses in 20ms = 1.6M steps/sec)
+- NO polling required - reading happens automatically in SysTick ISR @ 50Hz
+
+### CNC State Machine and Emergency Management (src/cnc.c, inc/cnc.h)
+
+**Complete state machine for CNC controller with automatic emergency handling:**
+
+This module implements the core control logic for the 3-axis CNC machine, including:
+- State machine (IDLE, RUNNING, HOMING, EMERGENCY, etc.)
+- Automatic limit switch detection via EXTI interrupts
+- Emergency retraction when finecorsa are triggered
+- Homing procedure (calibration to position 0,0,0)
+- Absolute position tracking via rotary encoders
+
+**State Machine (cnc_state_t):**
+- `ST_IDLE` - System ready, motors disabled
+- `ST_RUNNING` - Normal operation, executing G-code
+- `ST_HOMING` - Calibration procedure in progress
+- `ST_TEST` - Hardware test mode
+- `ST_EMERGENCY_STOP` - All axes disabled, waiting for recovery
+- `ST_ALARM_X/Y/Z` - Specific axis in emergency retraction
+
+**Initialization Sequence:**
+
+The `cnc_init()` function performs the following sequence:
+
+```c
+cnc_init():
+  1. Configure EXTI interrupts for 6 limit switches (falling edge 1→0)
+  2. Configure TIM2 for emergency STEP generation (1kHz base frequency)
+  3. Set NVIC priorities (EXTI=0 highest, TIM2=2 normal)
+  4. Execute automatic HOMING (Z → Y → X sequence)
+  5. Initialize encoder timers (TIM1/3/4 in encoder mode)
+  6. Register SysTick callback for 50Hz encoder reading
+  7. Return 0 if success, -1 if error
+```
+
+**IMPORTANT:** The initialization order is critical:
+1. **First:** HOMING - Moves all axes to position 0 (finecorsa MIN)
+2. **Then:** Encoder init - Starts counting from calibrated position 0
+3. **Finally:** Encoder callback - Begins automatic position tracking
+
+This ensures encoders always start from a known reference point (0,0,0).
+
+**Emergency Handling Architecture:**
+
+When a limit switch is triggered (1→0 transition):
+
+1. **EXTI ISR** detects falling edge, calls `cnc_handle_limit_interrupt()`
+2. **Immediate action:** Disable ALL affected axes (ENABLE=HIGH)
+3. **Queue creation:** Add affected axes to emergency queue
+4. **State change:** Set `current_state` to `ST_EMERGENCY_STOP`
+5. **Main loop:** Calls `cnc_process_emergency()` continuously
+6. **Sequential recovery:** For each queued axis:
+   - Enable only that axis
+   - Invert direction (`DIR = !DIR`)
+   - Generate STEP pulses via TIM2 until limit switch releases
+   - Disable axis
+7. **Completion:** Return to `ST_IDLE` when queue empty
+
+**Key Features:**
+- Limit switches are treated identically (MIN/MAX doesn't matter for retraction logic)
+- Direction is always inverted during retraction (moves away from triggered limit)
+- Recovery is sequential (one axis at a time) for safety
+- TIM2 generates STEP pulses during retraction (1kHz default, configurable per axis)
+
+**Encoder Position Tracking:**
+
+Absolute positions are maintained in 32-bit signed integers:
+```c
+typedef struct {
+    i32 x;  // Absolute position X in encoder steps
+    i32 y;  // Absolute position Y
+    i32 z;  // Absolute position Z
+} encoder_positions_t;
+```
+
+Updated automatically every 20ms (50Hz) by SysTick ISR callback.
+
+**Homing Functions:**
+
+- `cnc_home()` - Home all axes (Z → Y → X sequence)
+- `cnc_home_z()` - Home Z axis to MIN limit
+- `cnc_home_y()` - Home Y axis to MIN limit
+- `cnc_home_x()` - Home X axis to MIN limit
+
+Homing procedure for each axis:
+1. Check if already at MIN limit (skip if yes)
+2. Set direction LOW (toward MIN)
+3. Enable axis
+4. Generate STEP at 1kHz via TIM2
+5. Wait for limit switch trigger (timeout 30s)
+6. EXTI interrupt triggers emergency retraction automatically
+7. Wait for retraction complete (timeout 10s)
+8. Axis now at position 0 (physical reference)
+
+**Position Management:**
+
+- `cnc_get_position_x/y/z()` - Read absolute encoder position
+- `cnc_reset_position_x/y/z()` - Reset position to 0 (NOT used during homing)
+- `cnc_reset_all_positions()` - Reset all positions to 0
+
+**Emergency Management:**
+
+- `cnc_process_emergency()` - Process recovery queue (call in main loop)
+- `cnc_has_emergency()` - Check if emergency recovery pending
+- `cnc_clear_emergency()` - Manual emergency reset (dangerous!)
+
+**State Management:**
+
+- `cnc_get_state()` - Get current state
+- `cnc_set_state(new_state)` - Change state (with logging)
+- `cnc_get_state_name()` - Get state name string
+
+**Configuration Constants (in cnc.h):**
+```c
+#define EMER_STEP_FREQ_X    1000  // Emergency retraction frequency X (Hz)
+#define EMER_STEP_FREQ_Y    1000  // Emergency retraction frequency Y (Hz)
+#define EMER_STEP_FREQ_Z    1000  // Emergency retraction frequency Z (Hz)
+```
+
+**Important Design Decisions:**
+
+1. **MIN vs MAX is arbitrary:** The flag `min_limit` is only for logging. Retraction logic is identical (always inverts direction).
+2. **Homing before encoders:** Encoders are initialized AFTER homing so they start counting from position 0 (calibrated reference).
+3. **No encoder tracking during homing:** Homing is a calibration procedure, not a working movement. What matters is the final position (0), not the path.
+4. **Sequential recovery:** Only one axis recovers at a time to avoid complex multi-axis collision scenarios.
+5. **TIM2 shared:** TIM2 is used for both homing and emergency retraction (same mechanism).
+
+**Usage Example:**
+```c
+int main(void) {
+    SystemClock_Config();
+    log_init();
+    gpio_init_all();
+    systick_init(72000000);
+    uart_init();
+
+    // Initialize CNC system (includes automatic homing)
+    if (cnc_init() != 0) {
+        log_error("CNC initialization failed!");
+        while(1);  // Halt
+    }
+
+    // System ready at position 0,0,0
+    log_info("CNC ready!");
+
+    while(1) {
+        // Check for emergencies
+        if (cnc_has_emergency()) {
+            cnc_process_emergency();
+        }
+
+        // Normal operation...
+        i32 pos_x = cnc_get_position_x();
+        i32 pos_y = cnc_get_position_y();
+        i32 pos_z = cnc_get_position_z();
+
+        // Execute G-code, move axes, etc.
+    }
+}
+```
+
+**Interrupt Priority Scheme:**
+- **EXTI (limit switches):** Priority 0 (highest) - Safety critical
+- **SysTick (encoder reading):** Default priority
+- **TIM2 (STEP generation):** Priority 2 (normal)
+
+This ensures limit switches are ALWAYS detected immediately, even during encoder reading or STEP generation.
 
 ### Hardware Test Framework (src/test.c, inc/test.h)
 

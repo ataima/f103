@@ -25,7 +25,7 @@
  * SYST_CALIB (Calibration Value Register) - Offset 0x0C:
  *   Non usato in questa implementazione
  */
-
+#include "common.h"
 #include "systick.h"
 #include "log.h"
 
@@ -73,6 +73,18 @@ static volatile u32 systick_interrupt_count = 0;
  */
 static volatile bool systick_initialized = false;
 
+/**
+ * @brief Callback per lettura encoder a 50Hz (opzionale)
+ * @note Chiamato ogni 20ms dal SysTick ISR
+ */
+static void (*encoder_callback)(void) = NULL;
+
+/**
+ * @brief Contatore per dividere 1ms → 20ms (50Hz)
+ * @note Quando raggiunge 20, chiama il callback e si resetta
+ */
+static volatile u8 encoder_divider = 0;
+
 
 /* ============================================================================
  * INTERRUPT SERVICE ROUTINE
@@ -96,6 +108,20 @@ void SysTick_Handler(void)
 
     /* Incrementa contatore statistiche */
     systick_interrupt_count++;
+
+    /* -----------------------------------------------------------------------
+     * CALLBACK ENCODER A 50Hz (ogni 20ms)
+     * -----------------------------------------------------------------------
+     * Per ridurre l'overhead, leggiamo gli encoder solo ogni 20ms (50Hz)
+     * invece che ad ogni interrupt SysTick (1000Hz).
+     */
+    if (encoder_callback != NULL) {
+        encoder_divider++;
+        if (encoder_divider >= 20) {
+            encoder_divider = 0;
+            encoder_callback();  /* Chiama cnc_update_encoder_positions() */
+        }
+    }
 
     /* NOTA: Non è necessario clear del flag interrupt - fatto automaticamente
      *       dalla lettura del registro SYST_CSR da parte dell'hardware */
@@ -267,4 +293,31 @@ u32 systick_get_hw_counter(void)
     /* Legge il current value register (24-bit down counter)
      * Il valore conta all'INDIETRO da SYST_RVR verso 0 */
     return SYST_CVR & 0x00FFFFFF;
+}
+
+
+/* ============================================================================
+ * FUNZIONI PUBBLICHE - CALLBACK ENCODER
+ * ============================================================================
+ */
+
+/**
+ * @brief Registra callback per lettura encoder a 50Hz
+ * @details Il callback viene invocato dal SysTick ISR ogni 20ms (50Hz).
+ */
+void systick_register_encoder_callback(void (*callback)(void))
+{
+    /* Disabilita interrupt durante modifica (thread-safe) */
+    __disable_irq();
+
+    encoder_callback = callback;
+    encoder_divider = 0;  /* Reset contatore */
+
+    __enable_irq();
+
+    if (callback != NULL) {
+        log_info("SysTick: callback encoder registrato (50Hz)");
+    } else {
+        log_info("SysTick: callback encoder disabilitato");
+    }
 }

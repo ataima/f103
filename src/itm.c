@@ -23,7 +23,7 @@
  *
  ******************************************************************************
  */
-
+#include "common.h"
 #include "itm.h"
 #include "log.h"
 #include <stddef.h>
