@@ -59,7 +59,6 @@ volatile encoder_positions_t encoder_positions = {
 static const char* cnc_get_state_name_internal(cnc_state_t state);
 static void cnc_handle_limit_interrupt(u8 axis, bool min_limit);
 static void cnc_start_axis_recovery(u8 axis, bool min_limit);
-static void cnc_execute_moves_step_isr(void);
 
 
 /* ============================================================================
@@ -102,72 +101,6 @@ static volatile u32 exti_last_time_y = 0;
  * @brief Timestamp ultimo interrupt EXTI per asse Z (ms)
  */
 static volatile u32 exti_last_time_z = 0;
-
-
-/* ============================================================================
- * VARIABILI PRIVATE - ESECUZIONE MOVIMENTI BRESENHAM
- * ============================================================================
- */
-
-/**
- * @brief Buffer comandi movimento corrente (puntatore a buffer esterno)
- */
-static axis_move_t *execute_moves_buffer = NULL;
-
-/**
- * @brief Numero totale comandi nel buffer
- */
-static volatile u32 execute_moves_total = 0;
-
-/**
- * @brief Indice comando correntemente in esecuzione
- */
-static volatile u32 execute_moves_index = 0;
-
-/**
- * @brief Step rimanenti per comando corrente
- */
-static volatile u32 execute_moves_steps_remaining = 0;
-
-/**
- * @brief Asse corrente in movimento (0=X, 1=Y, 2=Z)
- */
-static volatile u8 execute_moves_axis = 0;
-
-/**
- * @brief Direzione corrente (true=positivo, false=negativo)
- */
-static volatile bool execute_moves_direction = true;
-
-/**
- * @brief Flag esecuzione completata
- */
-static volatile bool execute_moves_completed = false;
-
-/**
- * @brief Flag abort esecuzione (emergenza)
- */
-static volatile bool execute_moves_abort = false;
-
-/**
- * @brief Contatore step totali eseguiti (per logging ogni 100)
- */
-static volatile u32 execute_moves_step_counter = 0;
-
-/**
- * @brief Posizione presunta asse X (calcolata da step inviati, non da encoder)
- */
-static volatile i32 step_abs_pos_x = 0;
-
-/**
- * @brief Posizione presunta asse Y (calcolata da step inviati, non da encoder)
- */
-static volatile i32 step_abs_pos_y = 0;
-
-/**
- * @brief Posizione presunta asse Z (calcolata da step inviati, non da encoder)
- */
-static volatile i32 step_abs_pos_z = 0;
 
 
 /* ============================================================================
@@ -1149,186 +1082,28 @@ void cnc_reset_all_positions(void)
 
 
 /* ============================================================================
- * FUNZIONI PUBBLICHE - BRESENHAM 3D E GENERAZIONE TRAIETTORIE
+ * FUNZIONI PUBBLICHE - MOVIMENTO REAL-TIME (NUOVA API ✨)
  * ============================================================================
  */
 
 /**
- * @brief Helper: valore assoluto (usa macro già definita in common.h o implementazione inline)
+ * @brief Variabile globale stato movimento RT (usata da ISR)
  */
-static inline i32 abs_i32(i32 val) {
-    return (val < 0) ? -val : val;
+static volatile move_rt_state_t g_move_rt_state;
+
+/**
+ * @brief Helper: max tra 3 valori
+ */
+static inline u32 max3_u32(u32 a, u32 b, u32 c) {
+    u32 max_ab = (a > b) ? a : b;
+    return (max_ab > c) ? max_ab : c;
 }
 
 /**
- * @brief Genera traiettoria lineare 3D con algoritmo di Bresenham ottimizzato
- * @details Port dell'algoritmo da bresenham_3d_spiral_optimized.c
- *          Adattato per STM32F103 senza floating point.
+ * @brief Calcola profilo velocità trapezoidale per traiettoria
+ * @details Profilo standard: 25% accelerazione, 50% velocità costante, 25% decelerazione
  */
-int cnc_bresenham_line(point3d_t start, point3d_t end, axis_move_t *moves)
-{
-    /* Calcola delta e segni */
-    i32 dx = end.x - start.x;
-    i32 dy = end.y - start.y;
-    i32 dz = end.z - start.z;
-
-    i32 sx = (dx > 0) ? 1 : (dx < 0) ? -1 : 0;
-    i32 sy = (dy > 0) ? 1 : (dy < 0) ? -1 : 0;
-    i32 sz = (dz > 0) ? 1 : (dz < 0) ? -1 : 0;
-
-    dx = abs_i32(dx);
-    dy = abs_i32(dy);
-    dz = abs_i32(dz);
-
-    u32 move_count = 0;
-
-    /* Caso speciale: movimento nullo */
-    if (dx == 0 && dy == 0 && dz == 0) {
-        return 0;
-    }
-
-    /* ========================================================================
-     * CASO 1: X dominante (dx >= dy && dx >= dz)
-     * ========================================================================
-     */
-    if (dx >= dy && dx >= dz) {
-        i32 err_y = dx >> 1;
-        i32 err_z = dx >> 1;
-        i32 batch_steps = 0;
-
-        for (i32 i = 0; i < dx; i++) {
-            batch_steps++;
-            err_y -= dy;
-            err_z -= dz;
-
-            bool need_y = (err_y < 0);
-            bool need_z = (err_z < 0);
-
-            if (i == dx - 1 || need_y || need_z) {
-                if (batch_steps > 0) {
-                    moves[move_count].axis = 0;  // X
-                    moves[move_count].steps = batch_steps * sx;
-                    moves[move_count].freq_hz = 0;  // Da impostare dopo
-                    move_count++;
-                    batch_steps = 0;
-                }
-
-                if (need_y) {
-                    moves[move_count].axis = 1;  // Y
-                    moves[move_count].steps = 1 * sy;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_y += dx;
-                }
-
-                if (need_z) {
-                    moves[move_count].axis = 2;  // Z
-                    moves[move_count].steps = 1 * sz;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_z += dx;
-                }
-            }
-        }
-    }
-
-    /* ========================================================================
-     * CASO 2: Y dominante (dy >= dx && dy >= dz)
-     * ========================================================================
-     */
-    else if (dy >= dx && dy >= dz) {
-        i32 err_x = dy >> 1;
-        i32 err_z = dy >> 1;
-        i32 batch_steps = 0;
-
-        for (i32 i = 0; i < dy; i++) {
-            batch_steps++;
-            err_x -= dx;
-            err_z -= dz;
-
-            bool need_x = (err_x < 0);
-            bool need_z = (err_z < 0);
-
-            if (i == dy - 1 || need_x || need_z) {
-                if (batch_steps > 0) {
-                    moves[move_count].axis = 1;  // Y
-                    moves[move_count].steps = batch_steps * sy;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    batch_steps = 0;
-                }
-
-                if (need_x) {
-                    moves[move_count].axis = 0;  // X
-                    moves[move_count].steps = 1 * sx;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_x += dy;
-                }
-
-                if (need_z) {
-                    moves[move_count].axis = 2;  // Z
-                    moves[move_count].steps = 1 * sz;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_z += dy;
-                }
-            }
-        }
-    }
-
-    /* ========================================================================
-     * CASO 3: Z dominante (dz >= dx && dz >= dy)
-     * ========================================================================
-     */
-    else {
-        i32 err_x = dz >> 1;
-        i32 err_y = dz >> 1;
-        i32 batch_steps = 0;
-
-        for (i32 i = 0; i < dz; i++) {
-            batch_steps++;
-            err_x -= dx;
-            err_y -= dy;
-
-            bool need_x = (err_x < 0);
-            bool need_y = (err_y < 0);
-
-            if (i == dz - 1 || need_x || need_y) {
-                if (batch_steps > 0) {
-                    moves[move_count].axis = 2;  // Z
-                    moves[move_count].steps = batch_steps * sz;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    batch_steps = 0;
-                }
-
-                if (need_x) {
-                    moves[move_count].axis = 0;  // X
-                    moves[move_count].steps = 1 * sx;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_x += dz;
-                }
-
-                if (need_y) {
-                    moves[move_count].axis = 1;  // Y
-                    moves[move_count].steps = 1 * sy;
-                    moves[move_count].freq_hz = 0;
-                    move_count++;
-                    err_y += dz;
-                }
-            }
-        }
-    }
-
-    return (int)move_count;
-}
-
-/**
- * @brief Calcola profilo velocità trapezoidale
- */
-void cnc_calculate_trajectory_profile(u32 total_steps, trajectory_profile_t *profile)
+static void cnc_calculate_trajectory_profile(u32 total_steps, trajectory_profile_t *profile)
 {
     profile->total_steps = total_steps;
     profile->accel_steps = total_steps / 4;  // 25% accelerazione
@@ -1337,270 +1112,282 @@ void cnc_calculate_trajectory_profile(u32 total_steps, trajectory_profile_t *pro
 }
 
 /**
- * @brief Helper: calcola velocità istantanea in base alla distanza nel profilo
+ * @brief Inizializza movimento lineare 3D real-time
  */
-static u32 get_velocity_hz(u32 distance, trajectory_profile_t *profile, u32 min_hz, u32 max_hz)
+int cnc_move_init_rt(move_rt_state_t *state, point3d_t start, point3d_t end,
+                     u32 min_hz, u32 max_hz)
 {
-    if (profile->total_steps == 0) {
-        return max_hz;
-    }
-
-    if (distance < profile->accel_steps) {
-        /* Fase accelerazione: interpolazione lineare */
-        u32 vel_range = max_hz - min_hz;
-        return min_hz + (vel_range * distance) / profile->accel_steps;
-    }
-    else if (distance < profile->accel_steps + profile->const_steps) {
-        /* Fase velocità costante */
-        return max_hz;
-    }
-    else {
-        /* Fase decelerazione: interpolazione lineare inversa */
-        u32 decel_distance = distance - profile->accel_steps - profile->const_steps;
-        u32 vel_range = max_hz - min_hz;
-        return max_hz - (vel_range * decel_distance) / profile->decel_steps;
-    }
-}
-
-/**
- * @brief Applica profilo velocità trapezoidale ai comandi
- */
-void cnc_apply_speed_profile(axis_move_t *moves, u32 move_count, u32 min_hz, u32 max_hz)
-{
-    if (move_count == 0) {
-        return;
-    }
-
-    /* Calcola profilo trapezoidale basato su numero comandi */
-    trajectory_profile_t profile;
-    cnc_calculate_trajectory_profile(move_count, &profile);
-
-    /* Assegna velocità ad ogni comando */
-    for (u32 i = 0; i < move_count; i++) {
-        moves[i].freq_hz = get_velocity_hz(i, &profile, min_hz, max_hz);
-    }
-}
-
-/**
- * @brief Valida che una traiettoria arrivi correttamente a destinazione
- */
-bool cnc_validate_trajectory(point3d_t start, point3d_t end, axis_move_t *moves, u32 move_count)
-{
-    point3d_t current = start;
-
-    for (u32 i = 0; i < move_count; i++) {
-        switch (moves[i].axis) {
-            case 0: current.x += moves[i].steps; break;  // X
-            case 1: current.y += moves[i].steps; break;  // Y
-            case 2: current.z += moves[i].steps; break;  // Z
-        }
-    }
-
-    return (current.x == end.x && current.y == end.y && current.z == end.z);
-}
-
-/**
- * @brief Helper ISR: esegue uno step e gestisce avanzamento comandi
- * @details Chiamata da TIM2_IRQHandler per ogni interrupt timer
- */
-static void cnc_execute_moves_step_isr(void)
-{
-    /* Se non ci sono comandi in esecuzione, esci */
-    if (execute_moves_buffer == NULL || execute_moves_completed) {
-        return;
-    }
-
-    /* Toggle STEP pin per generare impulso */
-    step_state = !step_state;
-
-    if (step_state) {
-        /* Rising edge STEP */
-        switch (execute_moves_axis) {
-            case 0: gpio_set(STEP_X_PORT, STEP_X_PIN); break;
-            case 1: gpio_set(STEP_Y_PORT, STEP_Y_PIN); break;
-            case 2: gpio_set(STEP_Z_PORT, STEP_Z_PIN); break;
-        }
-    } else {
-        /* Falling edge STEP → step completato */
-        switch (execute_moves_axis) {
-            case 0: gpio_reset(STEP_X_PORT, STEP_X_PIN); break;
-            case 1: gpio_reset(STEP_Y_PORT, STEP_Y_PIN); break;
-            case 2: gpio_reset(STEP_Z_PORT, STEP_Z_PIN); break;
-        }
-
-        /* Decrementa step rimanenti e aggiorna posizione presunta */
-        if (execute_moves_steps_remaining > 0) {
-            execute_moves_steps_remaining--;
-            execute_moves_step_counter++;
-
-            /* Aggiorna posizione presunta in base a direzione */
-            i32 delta = execute_moves_direction ? 1 : -1;
-            switch (execute_moves_axis) {
-                case 0: step_abs_pos_x += delta; break;
-                case 1: step_abs_pos_y += delta; break;
-                case 2: step_abs_pos_z += delta; break;
-            }
-        }
-
-        /* Se comando completato, passa al prossimo */
-        if (execute_moves_steps_remaining == 0) {
-            execute_moves_index++;
-
-            /* Se tutti i comandi completati */
-            if (execute_moves_index >= execute_moves_total) {
-                TIM2_CR1 &= ~TIM_CR1_CEN;  /* Ferma timer */
-                execute_moves_completed = true;
-
-                /* Disabilita tutti gli assi */
-                disable_axis(0);
-                disable_axis(1);
-                disable_axis(2);
-                return;
-            }
-
-            /* Inizia nuovo comando */
-            axis_move_t *cmd = &execute_moves_buffer[execute_moves_index];
-            execute_moves_axis = cmd->axis;
-            execute_moves_steps_remaining = abs_i32(cmd->steps);
-            execute_moves_direction = (cmd->steps > 0);
-
-            /* Configura direzione */
-            write_dir(execute_moves_axis, execute_moves_direction);
-
-            /* Configura frequenza TIM2 */
-            if (cmd->freq_hz > 0) {
-                u32 arr = (1000000 / cmd->freq_hz) - 1;
-                TIM2_ARR = arr;
-            }
-
-            /* Abilita asse */
-            enable_axis(execute_moves_axis);
-        }
-    }
-}
-
-/**
- * @brief Esegue sequenza di comandi movimento con TIM2 interrupt-driven
- * @details Implementazione completa con generazione STEP hardware
- */
-int cnc_execute_moves(axis_move_t *moves, u32 move_count)
-{
-    if (moves == NULL || move_count == 0) {
-        log_error("execute_moves: buffer NULL o count=0");
+    if (state == NULL || min_hz == 0 || max_hz == 0 || min_hz > max_hz) {
         return -1;
     }
 
-    /* Verifica che non ci sia già un'esecuzione in corso */
-    if (execute_moves_buffer != NULL && !execute_moves_completed) {
-        log_error("execute_moves: esecuzione già in corso!");
+    /* Azzera struttura */
+    state->active = false;
+    state->completed = false;
+
+    /* Punti */
+    state->start = start;
+    state->end = end;
+    state->current = start;
+
+    /* Calcola delta e segni */
+    i32 dx = end.x - start.x;
+    i32 dy = end.y - start.y;
+    i32 dz = end.z - start.z;
+
+    state->sx = (dx > 0) ? 1 : (dx < 0) ? -1 : 0;
+    state->sy = (dy > 0) ? 1 : (dy < 0) ? -1 : 0;
+    state->sz = (dz > 0) ? 1 : (dz < 0) ? -1 : 0;
+
+    state->dx = (dx < 0) ? -dx : dx;
+    state->dy = (dy < 0) ? -dy : dy;
+    state->dz = (dz < 0) ? -dz : dz;
+
+    /* Determina asse dominante e step totali */
+    state->total_steps = max3_u32(state->dx, state->dy, state->dz);
+
+    if (state->total_steps == 0) {
+        /* Movimento nullo */
+        state->completed = true;
+        return 0;
+    }
+
+    if (state->dx >= state->dy && state->dx >= state->dz) {
+        state->dominant_axis = 0;  /* X */
+    } else if (state->dy >= state->dx && state->dy >= state->dz) {
+        state->dominant_axis = 1;  /* Y */
+    } else {
+        state->dominant_axis = 2;  /* Z */
+    }
+
+    /* Inizializza errori Bresenham */
+    state->err_xy = state->dx >> 1;
+    state->err_xz = state->dx >> 1;
+
+    /* Contatori */
+    state->current_step = 0;
+
+    /* Profilo velocità */
+    state->min_freq_hz = min_hz;
+    state->max_freq_hz = max_hz;
+
+    /* Calcola profilo trapezoidale (usa funzione esistente) */
+    cnc_calculate_trajectory_profile(state->total_steps, &state->profile);
+
+    return 0;
+}
+
+/**
+ * @brief Calcola step successivo Bresenham 3D (INCREMENTALE)
+ * @return Maschera assi: bit0=X, bit1=Y, bit2=Z, 0=completato
+ */
+u8 cnc_move_step_rt(move_rt_state_t *state)
+{
+    if (state == NULL || state->completed) {
+        return 0;
+    }
+
+    /* Verifica se raggiunti tutti gli step */
+    if (state->current_step >= state->total_steps) {
+        state->completed = true;
+        return 0;
+    }
+
+    u8 axis_mask = 0;
+
+    /* Algoritmo Bresenham 3D basato su asse dominante */
+    switch (state->dominant_axis) {
+        case 0:  /* X dominante */
+            /* Muovi sempre X */
+            axis_mask |= 0x01;
+            state->current.x += state->sx;
+
+            /* Verifica Y */
+            state->err_xy -= state->dy;
+            if (state->err_xy < 0) {
+                axis_mask |= 0x02;
+                state->current.y += state->sy;
+                state->err_xy += state->dx;
+            }
+
+            /* Verifica Z */
+            state->err_xz -= state->dz;
+            if (state->err_xz < 0) {
+                axis_mask |= 0x04;
+                state->current.z += state->sz;
+                state->err_xz += state->dx;
+            }
+            break;
+
+        case 1:  /* Y dominante */
+            /* Muovi sempre Y */
+            axis_mask |= 0x02;
+            state->current.y += state->sy;
+
+            /* Verifica X */
+            state->err_xy -= state->dx;
+            if (state->err_xy < 0) {
+                axis_mask |= 0x01;
+                state->current.x += state->sx;
+                state->err_xy += state->dy;
+            }
+
+            /* Verifica Z */
+            state->err_xz -= state->dz;
+            if (state->err_xz < 0) {
+                axis_mask |= 0x04;
+                state->current.z += state->sz;
+                state->err_xz += state->dy;
+            }
+            break;
+
+        case 2:  /* Z dominante */
+            /* Muovi sempre Z */
+            axis_mask |= 0x04;
+            state->current.z += state->sz;
+
+            /* Verifica X */
+            state->err_xy -= state->dx;
+            if (state->err_xy < 0) {
+                axis_mask |= 0x01;
+                state->current.x += state->sx;
+                state->err_xy += state->dz;
+            }
+
+            /* Verifica Y */
+            state->err_xz -= state->dy;
+            if (state->err_xz < 0) {
+                axis_mask |= 0x02;
+                state->current.y += state->sy;
+                state->err_xz += state->dz;
+            }
+            break;
+    }
+
+    /* Incrementa contatore step */
+    state->current_step++;
+
+    return axis_mask;
+}
+
+/**
+ * @brief Calcola velocità istantanea (profilo trapezoidale)
+ */
+u32 cnc_move_get_speed_rt(const volatile move_rt_state_t *state)
+{
+    if (state == NULL || state->total_steps == 0) {
+        return state->min_freq_hz;
+    }
+
+    u32 step = state->current_step;
+    u32 min_hz = state->min_freq_hz;
+    u32 max_hz = state->max_freq_hz;
+
+    /* Fase accelerazione */
+    if (step < state->profile.accel_steps) {
+        /* Interpolazione lineare: min_hz → max_hz */
+        u32 delta = max_hz - min_hz;
+        return min_hz + (delta * step) / state->profile.accel_steps;
+    }
+
+    /* Fase velocità costante */
+    if (step < state->profile.accel_steps + state->profile.const_steps) {
+        return max_hz;
+    }
+
+    /* Fase decelerazione */
+    u32 decel_start = state->profile.accel_steps + state->profile.const_steps;
+    u32 decel_step = step - decel_start;
+    u32 delta = max_hz - min_hz;
+    return max_hz - (delta * decel_step) / state->profile.decel_steps;
+}
+
+/**
+ * @brief Ottiene percentuale completamento
+ */
+u8 cnc_move_get_percentage_rt(const volatile move_rt_state_t *state)
+{
+    if (state == NULL || state->total_steps == 0) {
+        return 100;
+    }
+    return (u8)((state->current_step * 100) / state->total_steps);
+}
+
+/**
+ * @brief Esegue movimento real-time (bloccante)
+ */
+int cnc_move_execute_rt(move_rt_state_t *state)
+{
+    if (state == NULL || state->completed) {
         return -1;
     }
 
-    log_info("Inizio esecuzione: %u comandi", move_count);
+    log_info("Movimento RT: (%d,%d,%d) -> (%d,%d,%d), %u step",
+             (int)state->start.x, (int)state->start.y, (int)state->start.z,
+             (int)state->end.x, (int)state->end.y, (int)state->end.z,
+             state->total_steps);
 
-    /* Inizializza variabili globali */
-    execute_moves_buffer = moves;
-    execute_moves_total = move_count;
-    execute_moves_index = 0;
-    execute_moves_completed = false;
-    execute_moves_abort = false;
-    execute_moves_step_counter = 0;
-    step_state = false;
+    /* Copia stato in variabile globale per ISR */
+    g_move_rt_state = *state;
+    g_move_rt_state.active = true;
 
-    /* Azzera posizioni presunte (assumiamo partenza da posizione corrente encoder) */
-    step_abs_pos_x = cnc_get_position_x();
-    step_abs_pos_y = cnc_get_position_y();
-    step_abs_pos_z = cnc_get_position_z();
-
-    /* Configura primo comando */
-    axis_move_t *cmd = &moves[0];
-    execute_moves_axis = cmd->axis;
-    execute_moves_steps_remaining = abs_i32(cmd->steps);
-    execute_moves_direction = (cmd->steps > 0);
-
-    /* Imposta direzione */
-    write_dir(execute_moves_axis, execute_moves_direction);
-
-    /* Configura frequenza TIM2 */
-    if (cmd->freq_hz > 0) {
-        u32 arr = (1000000 / cmd->freq_hz) - 1;
-        TIM2_ARR = arr;
-    } else {
-        TIM2_ARR = 999;  /* Default 1kHz */
-    }
-
-    /* Abilita asse */
-    enable_axis(execute_moves_axis);
-
-    /* Reset e avvia TIM2 */
+    /* Configura TIM2 per prima velocità */
+    u32 initial_freq = cnc_move_get_speed_rt(&g_move_rt_state);
+    TIM2_ARR = (1000000 / initial_freq) - 1;
     TIM2_CNT = 0;
     TIM2_SR = 0;
+
+    /* Avvia TIM2 */
     TIM2_CR1 |= TIM_CR1_CEN;
 
-    /* Attendi completamento (con timeout e check emergenza) */
+    /* Attendi completamento */
     u32 start_time = systick_get_tick();
     u32 last_log_step = 0;
 
-    while (!execute_moves_completed && !execute_moves_abort) {
-        /* Timeout 60 secondi */
+    while (!g_move_rt_state.completed) {
+        /* Timeout 60s */
         if (systick_timeout(start_time, 60000)) {
-            log_error("execute_moves: timeout 60s");
             TIM2_CR1 &= ~TIM_CR1_CEN;
-            execute_moves_completed = true;
-            execute_moves_buffer = NULL;
-            disable_axis(0);
-            disable_axis(1);
-            disable_axis(2);
+            g_move_rt_state.active = false;
+            log_error("Movimento RT: timeout 60s");
             return -1;
         }
 
         /* Check emergenza */
         if (cnc_has_emergency()) {
-            log_warning("execute_moves: abort per emergenza");
             TIM2_CR1 &= ~TIM_CR1_CEN;
-            execute_moves_abort = true;
-            execute_moves_completed = true;
-            execute_moves_buffer = NULL;
+            g_move_rt_state.active = false;
+            log_warning("Movimento RT: abort emergenza");
             return -1;
         }
 
-        /* Log posizione ogni 100 step */
-        if (execute_moves_step_counter >= last_log_step + 100) {
-            last_log_step = execute_moves_step_counter;
-
-            /* Lettura posizioni encoder (reali) */
-            EVAL_LOG(i32 enc_x = cnc_get_position_x();)
-            EVAL_LOG(i32 enc_y = cnc_get_position_y();)
-            EVAL_LOG(i32 enc_z = cnc_get_position_z();)
-
-            /* Calcolo errore (presunta - encoder) */
-            EVAL_LOG(i32 err_x = step_abs_pos_x - enc_x;)
-            EVAL_LOG(i32 err_y = step_abs_pos_y - enc_y;)
-            EVAL_LOG(i32 err_z = step_abs_pos_z - enc_z;)
-
-            /* Log completo: step totali, posizione presunta, posizione encoder, errore */
-            log_info("Step:%u | Cmd:(%d,%d,%d) Enc:(%d,%d,%d) Err:(%d,%d,%d)",
-                     execute_moves_step_counter,
-                     (int)step_abs_pos_x, (int)step_abs_pos_y, (int)step_abs_pos_z,
-                     (int)enc_x, (int)enc_y, (int)enc_z,
-                     (int)err_x, (int)err_y, (int)err_z);
+        /* Log ogni 100 step */
+        if (g_move_rt_state.current_step >= last_log_step + 100) {
+            last_log_step = g_move_rt_state.current_step;
+            u8 perc = cnc_move_get_percentage_rt(&g_move_rt_state);
+            u32 freq = cnc_move_get_speed_rt(&g_move_rt_state);
+            log_info("Step:%u/%u (%u%%) Vel:%u Hz Pos:(%d,%d,%d)",
+                     g_move_rt_state.current_step,
+                     g_move_rt_state.total_steps,
+                     perc, freq,
+                     (int)g_move_rt_state.current.x,
+                     (int)g_move_rt_state.current.y,
+                     (int)g_move_rt_state.current.z);
         }
 
-        systick_delay_ms(10);
+        __WFI();  /* Sleep fino a prossimo interrupt */
     }
 
-    /* Cleanup */
+    /* Ferma TIM2 */
     TIM2_CR1 &= ~TIM_CR1_CEN;
-    execute_moves_buffer = NULL;
-    disable_axis(0);
-    disable_axis(1);
-    disable_axis(2);
+    g_move_rt_state.active = false;
 
-    log_info("Esecuzione completata: %u step totali", execute_moves_step_counter);
+    /* Copia stato finale */
+    *state = g_move_rt_state;
 
-    return execute_moves_abort ? -1 : 0;
+    log_info("Movimento RT completato");
+    return 0;
 }
-
 
 /* ============================================================================
  * FUNZIONI INTERNE - GESTIONE RECUPERO ASSI
@@ -1726,9 +1513,10 @@ static void cnc_start_axis_recovery(u8 axis, bool min_limit)
 
 /**
  * @brief ISR TIM2 - Generazione impulsi STEP
- * @details Gestisce DUE modalità:
- *          1. Recupero emergenza (recovery_axis != 0xFF)
- *          2. Movimento normale Bresenham (execute_moves_buffer != NULL)
+ * @details Gestisce TRE modalità:
+ *          1. Movimento REAL-TIME (g_move_rt_state.active) - NUOVA! ✨
+ *          2. Movimento ARRAY legacy (execute_moves_buffer != NULL) - DEPRECATA
+ *          3. Recupero emergenza / homing (recovery_axis != 0xFF)
  */
 void TIM2_IRQHandler(void)
 {
@@ -1738,11 +1526,40 @@ void TIM2_IRQHandler(void)
     }
 
     /* ========================================================================
-     * MODALITÀ 1: ESECUZIONE MOVIMENTI BRESENHAM (priorità alta)
+     * MODALITÀ 1: MOVIMENTO REAL-TIME (NUOVA API - step simultanei!)
      * ========================================================================
      */
-    if (execute_moves_buffer != NULL && !execute_moves_completed) {
-        cnc_execute_moves_step_isr();
+    if (g_move_rt_state.active && !g_move_rt_state.completed) {
+        static bool step_state_rt = false;
+        step_state_rt = !step_state_rt;
+
+        if (step_state_rt) {
+            /* Rising edge: genera step multi-asse */
+            u8 mask = cnc_move_step_rt((move_rt_state_t*)&g_move_rt_state);
+
+            if (mask == 0) {
+                /* Movimento completato */
+                g_move_rt_state.completed = true;
+                TIM2_CR1 &= ~TIM_CR1_CEN;
+                return;
+            }
+
+            /* Set impulsi SIMULTANEI (step multi-asse!) */
+            if (mask & 0x01) gpio_set(STEP_X_PORT, STEP_X_PIN);
+            if (mask & 0x02) gpio_set(STEP_Y_PORT, STEP_Y_PIN);
+            if (mask & 0x04) gpio_set(STEP_Z_PORT, STEP_Z_PIN);
+
+            /* Calcola e aggiorna velocità on-the-fly */
+            u32 new_freq = cnc_move_get_speed_rt(&g_move_rt_state);
+            TIM2_ARR = (1000000 / new_freq) - 1;
+
+        } else {
+            /* Falling edge: reset tutti gli impulsi */
+            gpio_reset(STEP_X_PORT, STEP_X_PIN);
+            gpio_reset(STEP_Y_PORT, STEP_Y_PIN);
+            gpio_reset(STEP_Z_PORT, STEP_Z_PIN);
+        }
+
         return;
     }
 

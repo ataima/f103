@@ -41,8 +41,52 @@
 #if ENABLE_LOG
 
 /* =============================================================================
- * CONFIGURAZIONE DEL BUFFER CIRCOLARE
+ * CONFIGURAZIONE MODALITÀ LOGGING
  * ============================================================================= */
+
+/**
+ * @brief Modalità logging disponibili (MUTUALMENTE ESCLUSIVE!)
+ *
+ * LOG_TO_MEMORY = 1: Log scritti in buffer circolare RAM (2 KB)
+ *                    - Pro: Veloce, nessun overhead I/O
+ *                    - Contro: Limitato a 2 KB, richiede debugger/dump per lettura
+ *
+ * LOG_DIRECT_UART = 1: Log scritti direttamente su UART3 (115200 baud)
+ *                      - Pro: Debug real-time senza debugger, illimitato
+ *                      - Contro: MOLTO più lento (blocca esecuzione), overhead UART
+ *
+ * @warning SOLO UNA delle due modalità può essere attiva!
+ *          Se entrambe = 1 → errore di compilazione
+ */
+#define LOG_TO_MEMORY           0    /**< Log in buffer circolare RAM */
+#define LOG_DIRECT_UART         1    /**< Log diretti via UART3 (debug) */
+
+/* Controllo mutua esclusione */
+#if (LOG_TO_MEMORY == 1) && (LOG_DIRECT_UART == 1)
+    #error "ERRORE: LOG_TO_MEMORY e LOG_DIRECT_UART non possono essere entrambi attivi! Scegliere una sola modalità."
+#endif
+
+#if (LOG_TO_MEMORY == 0) && (LOG_DIRECT_UART == 0)
+    #error "ERRORE: Almeno una modalità di logging deve essere attiva (LOG_TO_MEMORY=1 o LOG_DIRECT_UART=1)"
+#endif
+
+
+/* =============================================================================
+ * CONFIGURAZIONE DEL BUFFER CIRCOLARE (solo se LOG_TO_MEMORY=1)
+ * ============================================================================= */
+
+/* =============================================================================
+ * CONFIGURAZIONE COMUNE (indipendente dalla modalità)
+ * ============================================================================= */
+
+/**
+ * Dimensione massima di un singolo messaggio di log (incluso terminatore null)
+ * Usata sia per LOG_TO_MEMORY che LOG_DIRECT_UART
+ */
+#define LOG_MAX_MESSAGE_SIZE    128U
+
+
+#if LOG_TO_MEMORY
 
 /**
  * Dimensione totale del buffer di log (2KB = 2048 bytes)
@@ -50,11 +94,7 @@
  */
 #define LOG_BUFFER_SIZE         2048U
 
-/**
- * Dimensione massima di un singolo messaggio di log (incluso terminatore null)
- * Messaggi più lunghi verranno troncati
- */
-#define LOG_MAX_MESSAGE_SIZE    128U
+#endif /* LOG_TO_MEMORY */
 
 /**
  * Prefissi per i diversi livelli di log
@@ -109,6 +149,12 @@ int log_init(void);
  */
 int log_write(const char *message);
 
+
+/* -----------------------------------------------------------------------------
+ * Funzioni specifiche per LOG_TO_MEMORY (buffer circolare)
+ * ----------------------------------------------------------------------------- */
+#if LOG_TO_MEMORY
+
 /**
  * @brief  Legge un messaggio dal buffer circolare (POP)
  *
@@ -126,6 +172,7 @@ int log_write(const char *message);
  * @note   Thread-safe: Sì (usa lock statico)
  * @note   Interrupt-safe: Sì (disabilita interrupt durante l'accesso)
  * @note   Il buffer dest deve essere almeno LOG_MAX_MESSAGE_SIZE bytes
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  *
  * @example
  *   char buffer[LOG_MAX_MESSAGE_SIZE];
@@ -142,6 +189,7 @@ int log_read(char *dest);
  * @retval u16 - Numero di messaggi nel buffer
  *
  * @note   Thread-safe: Sì (lettura atomica su Cortex-M3)
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  */
 u16 log_get_count(void);
 
@@ -152,6 +200,7 @@ u16 log_get_count(void);
  * @retval u16 - Numero di byte occupati (max 2048)
  *
  * @note   Thread-safe: Sì (lettura atomica su Cortex-M3)
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  */
 u16 log_get_used_bytes(void);
 
@@ -162,6 +211,7 @@ u16 log_get_used_bytes(void);
  * @retval u16 - Numero di byte disponibili (max 2048)
  *
  * @note   Thread-safe: Sì (lettura atomica su Cortex-M3)
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  */
 u16 log_get_free_bytes(void);
 
@@ -176,6 +226,7 @@ u16 log_get_free_bytes(void);
  * @retval int - LOG_OK se successo, LOG_ERROR_LOCKED se bloccato
  *
  * @note   Thread-safe: Sì (usa lock statico)
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  */
 int log_clear(void);
 
@@ -190,8 +241,16 @@ int log_clear(void);
  * @retval void* - Indirizzo base del buffer (0x20004800)
  *
  * @note   Solo per debugging e dump memoria
+ * @note   DISPONIBILE SOLO SE LOG_TO_MEMORY=1
  */
 void* log_get_buffer_address(void);
+
+#else /* LOG_DIRECT_UART */
+
+/* Stubs per compatibilità quando LOG_DIRECT_UART=1 (funzioni non disponibili) */
+static inline int log_clear(void) { return LOG_OK; }  /* No-op per UART */
+
+#endif /* LOG_TO_MEMORY */
 
 /* =============================================================================
  * FUNZIONI DI LOGGING CON PREFISSI E FORMATTAZIONE
@@ -340,6 +399,19 @@ void * log_site(void);
 #define EVAL_LOG(MSG)
 #endif
 
+
+
+#if LOG_TO_MEMORY
+#define EVAL_LOG_MEMORY(MSG)	MSG
+#else
+#define EVAL_LOG_MEMORY(MSG)
+#endif
+
+#if LOG_DIRECT_UART
+#define EVAL_LOG_UART(MSG)	MSG
+#else
+#define EVAL_LOG_UART(MSG)
+#endif
 
 #endif /* LOG_H_ */
 

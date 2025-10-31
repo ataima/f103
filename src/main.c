@@ -38,7 +38,6 @@
 int main(void)
 {
     int clock_status;
-    int log_status;
 
     /* =========================================================================
      * INIZIALIZZAZIONE DEL SISTEMA DI CLOCK
@@ -80,12 +79,6 @@ int main(void)
      * Il logging è thread-safe e interrupt-safe.
      */
 
-    log_status = log_init();
-    if (log_status != LOG_OK)
-    {
-        log_error("Inizializzazione sistema log fallita!");
-        while(1);
-    }
 
     /* Verifica che la configurazione sia andata a buon fine */
     if (clock_status != CLOCK_OK)
@@ -105,25 +98,60 @@ int main(void)
         /* Per ora, stampa un messaggio di errore e resta bloccato */
         if (clock_status == CLOCK_ERROR_HSE)
         {
-            log_error("ERROR: HSE non si avvia! Verifica il quarzo esterno");
+            while(1); // TODO C0SA FARE ?
         }
         else if (clock_status == CLOCK_ERROR_PLL)
         {
-        	log_error("ERRORE: PLL non fa lock! Problema di configurazione");
+        	while(1); // TODO C0SA FARE ?
         }
 
         /* Loop infinito in caso di errore */
         while(1);
     }
 
+    /* =========================================================================
+     * INIZIALIZZAZIONE UART (CONSOLE SERIALE)
+     * =========================================================================
+     *
+     * L'UART permette di inviare messaggi di debug attraverso un cavo seriale,
+     * senza bisogno del debugger. Funziona sempre, anche in produzione.
+     *
+     * COLLEGAMENTO:
+     * - TX (PB10) → RX dell'adattatore USB-UART
+     * - GND       → GND dell'adattatore
+     * - Baud: 115200, 8N1
+     *
+     * Visualizza con: minicom, putty, screen, etc.
+     *
+     * NOTA: I pin UART3 (PB10/PB11) sono configurati internamente da uart_init()
+     */
 
 
-    /* Primo log: sistema avviato! */
-    log_info("Sistema STM32F103 avviato con successo");
+    int uart_status = uart_init();
+    if (uart_status == UART_OK)
+    {
+        /* UART inizializzato con successo */
+        uart_write("\r\n\r\n");
+        uart_write("=======================================================\r\n");
+        uart_write("  STM32F103C8T6 - Console UART @ 115200 baud\r\n");
+        uart_write("=======================================================\r\n");
+        uart_write("SYSCLK: 72 MHz | UART: PA9(TX) PA10(RX)\r\n");
+        uart_write("=======================================================\r\n\r\n");
 
-    /* Log della configurazione completata */
-    log_info("Clock configurato a 72 MHz");
-    log_debug("HSE: 8 MHz, PLL: x9, SYSCLK: 72 MHz");
+        /* Dumpa i log accumulati fino ad ora */
+        uart_write("[BOOT] Dump dei log di avvio:\r\n\r\n");
+
+        uart_write("\r\n[BOOT] Sistema pronto.\r\n");
+        uart_write("[BOOT] Entrando nel main loop...\r\n\r\n");
+
+        /* Riaggiungi un log per il main loop (il buffer è stato svuotato) */
+    }
+    else
+    {
+        /* UART non disponibile - errore di inizializzazione */
+    	while(1); // TODO C0SA FARE ?
+    }
+
 
     /* =========================================================================
      * INIZIALIZZAZIONE ITM (CONSOLE VIA SWO)
@@ -168,6 +196,15 @@ int main(void)
 
     #endif
 
+    log_init();
+    /* Primo log: sistema avviato! */
+     log_info("Sistema STM32F103 avviato con successo");
+
+     /* Log della configurazione completata */
+     log_info("Clock configurato a 72 MHz");
+     log_debug("HSE: 8 MHz, PLL: x9, SYSCLK: 72 MHz");
+     log_info("GPIO CNC inizializzati correttamente");
+
     /* =========================================================================
      * INIZIALIZZAZIONE GPIO (SISTEMA CNC)
      * =========================================================================
@@ -190,7 +227,6 @@ int main(void)
         while(1);
     }
 
-    log_info("GPIO CNC inizializzati correttamente");
 
     /* =========================================================================
      * INIZIALIZZAZIONE SYSTICK (TIMER DI SISTEMA)
@@ -234,49 +270,6 @@ int main(void)
 
     log_info("Sistema CNC inizializzato: stato=%s", cnc_get_state_name());
 
-    /* =========================================================================
-     * INIZIALIZZAZIONE UART (CONSOLE SERIALE)
-     * =========================================================================
-     *
-     * L'UART permette di inviare messaggi di debug attraverso un cavo seriale,
-     * senza bisogno del debugger. Funziona sempre, anche in produzione.
-     *
-     * COLLEGAMENTO:
-     * - TX (PB10) → RX dell'adattatore USB-UART
-     * - GND       → GND dell'adattatore
-     * - Baud: 115200, 8N1
-     *
-     * Visualizza con: minicom, putty, screen, etc.
-     *
-     * NOTA: I pin UART3 (PB10/PB11) sono configurati internamente da uart_init()
-     */
-
-    int uart_status = uart_init();
-    if (uart_status == UART_OK)
-    {
-        /* UART inizializzato con successo */
-        uart_write("\r\n\r\n");
-        uart_write("=======================================================\r\n");
-        uart_write("  STM32F103C8T6 - Console UART @ 115200 baud\r\n");
-        uart_write("=======================================================\r\n");
-        uart_write("SYSCLK: 72 MHz | UART: PA9(TX) PA10(RX)\r\n");
-        uart_write("=======================================================\r\n\r\n");
-
-        /* Dumpa i log accumulati fino ad ora */
-        uart_write("[BOOT] Dump dei log di avvio:\r\n\r\n");
-        log_via_uart();  /* Questa funzione svuota il buffer circolare! */
-
-        uart_write("\r\n[BOOT] Sistema pronto.\r\n");
-        uart_write("[BOOT] Entrando nel main loop...\r\n\r\n");
-
-        /* Riaggiungi un log per il main loop (il buffer è stato svuotato) */
-        log_info("Main loop avviato");
-    }
-    else
-    {
-        /* UART non disponibile - errore di inizializzazione */
-        log_error("UART init failed!");
-    }
 
     /* =========================================================================
      * TEST MOVIMENTO BRESENHAM 3D

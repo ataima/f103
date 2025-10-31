@@ -83,7 +83,8 @@
 /**
  * @brief Dimensione buffer RX (se UART_ENABLE_RX_IRQ = 1)
  */
-#define UART_RX_BUFFER_SIZE 128
+#define UART_RX_BUFFER_SIZE 512
+
 
 /* =============================================================================
  * CODICI DI RITORNO

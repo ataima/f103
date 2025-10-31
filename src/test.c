@@ -399,18 +399,24 @@ bool test_enable_io(void)
 #if ENABLE_BRESENHAM_TEST
 
 /**
- * @brief Test movimento 3D con algoritmo Bresenham
- * @details Esegue un movimento lineare 3D da origine a (500,300,200).
- *          Applica profilo velocità trapezoidale 500Hz-5000Hz.
- *          Logga posizione ogni 100 step (gestito da cnc_execute_moves).
+ * @brief Test movimento 3D con algoritmo Bresenham REAL-TIME
+ * @details Esegue movimento lineare 3D da origine a (500,300,200).
+ *          NUOVA API: step simultanei multi-asse, calcolo on-the-fly.
+ *          Profilo velocità trapezoidale 500Hz-5000Hz calcolato real-time.
+ *          STAMPA DETTAGLIATA: delta_x/y/z e velocità ad ogni iterazione.
+ *
+ * VANTAGGI vs vecchia API:
+ * - RAM: 104 bytes vs 12 KB (risparmio 99%)
+ * - Step simultanei: traiettoria lineare perfetta (no segmentazione)
+ * - Velocità dinamica: profilo trapezoidale calcolato on-the-fly
  */
 void test_bresenham_movement(void)
 {
     log_clear();
-    log_info("=== TEST MOVIMENTO BRESENHAM 3D ===");
+    log_info("=== TEST MOVIMENTO REAL-TIME 3D (DETTAGLIATO) ===");
 
-    /* Buffer comandi (statico per evitare stack overflow) */
-    static axis_move_t moves_buffer[MAX_MOVE_BUFFER];
+    /* Stato movimento (SOLO 104 bytes vs 12 KB!) */
+    move_rt_state_t move;
 
     /* Definisci traiettoria: da (0,0,0) a (500,300,200) */
     point3d_t start = {0, 0, 0};
@@ -419,35 +425,71 @@ void test_bresenham_movement(void)
     log_info("Start: (%d,%d,%d)", start.x, start.y, start.z);
     log_info("End: (%d,%d,%d)", end.x, end.y, end.z);
 
-    /* Genera traiettoria con Bresenham */
-    int move_count = cnc_bresenham_line(start, end, moves_buffer);
-
-    if (move_count <= 0) {
-        log_error("Bresenham fallito: move_count=%d", move_count);
+    /* Inizializza movimento real-time */
+    if (cnc_move_init_rt(&move, start, end, MIN_STEP_FREQ, MAX_STEP_FREQ) != 0) {
+        log_error("Inizializzazione movimento fallita!");
         return;
     }
 
-    log_info("Comandi generati: %d", move_count);
+    log_info("Movimento RT configurato:");
+    log_info("  - Step totali: %u", move.total_steps);
+    log_info("  - Asse dominante: %c", (move.dominant_axis == 0) ? 'X' :
+                                        (move.dominant_axis == 1) ? 'Y' : 'Z');
+    log_info("  - Profilo: Accel=%u Const=%u Decel=%u",
+             move.profile.accel_steps,
+             move.profile.const_steps,
+             move.profile.decel_steps);
+    log_info("  - Velocità: %u-%u Hz", MIN_STEP_FREQ, MAX_STEP_FREQ);
 
-    /* Applica profilo velocità trapezoidale */
-    cnc_apply_speed_profile(moves_buffer, move_count, MIN_STEP_FREQ, MAX_STEP_FREQ);
-    log_info("Profilo velocità applicato: %u-%u Hz", MIN_STEP_FREQ, MAX_STEP_FREQ);
+    /* Esegui movimento manuale con log ad ogni step */
+    log_info("Avvio esecuzione movimento real-time (log dettagliato)...");
 
-    /* Valida traiettoria (opzionale) */
-    if (!cnc_validate_trajectory(start, end, moves_buffer, move_count)) {
-        log_error("Validazione traiettoria FALLITA!");
-        return;
+    while (!move.completed) {
+        /* Salva posizione corrente */
+        i32 prev_x = move.current.x;
+        i32 prev_y = move.current.y;
+        i32 prev_z = move.current.z;
+
+        /* Esegui step Bresenham */
+        cnc_move_step_rt(&move);
+
+        /* Calcola delta */
+        i32 delta_x = move.current.x - prev_x;
+        i32 delta_y = move.current.y - prev_y;
+        i32 delta_z = move.current.z - prev_z;
+
+        /* Calcola velocità corrente */
+        u32 speed = cnc_move_get_speed_rt(&move);
+        u8 perc = cnc_move_get_percentage_rt(&move);
+
+        /* Log dettagliato */
+        log_info("Step:%u/%u (%u%%) dx:%d dy:%d dz:%d Vel:%u Hz Pos:(%d,%d,%d)",
+                 move.current_step,
+                 move.total_steps,
+                 perc,
+                 (int)delta_x,
+                 (int)delta_y,
+                 (int)delta_z,
+                 speed,
+                 (int)move.current.x,
+                 (int)move.current.y,
+                 (int)move.current.z);
+
+        /* Timeout safety */
+        if (move.current_step > move.total_steps + 10) {
+            log_error("Timeout: troppi step!");
+            break;
+        }
     }
-    log_info("Traiettoria validata: OK");
 
-    /* Esegui movimento (bloccante, con log ogni 100 step) */
-    log_info("Avvio esecuzione movimento...");
-    int result = cnc_execute_moves(moves_buffer, move_count);
-
-    if (result == 0) {
+    if (move.completed) {
         log_info("=== TEST COMPLETATO CON SUCCESSO ===");
+        log_info("Posizione finale: (%d,%d,%d)",
+                 (int)move.current.x,
+                 (int)move.current.y,
+                 (int)move.current.z);
     } else {
-        log_error("=== TEST FALLITO: result=%d ===", result);
+        log_error("=== TEST FALLITO ===");
     }
 
     /* Delay prima di continuare */

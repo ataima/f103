@@ -206,17 +206,6 @@ typedef struct {
 } point3d_t;
 
 /**
- * @brief Comando movimento singolo asse (batch)
- * @details Rappresenta un movimento batch su un singolo asse.
- *          Ottimizzazione: raggruppa step consecutivi sullo stesso asse.
- */
-typedef struct {
-    u8 axis;       /**< Asse: 0=X, 1=Y, 2=Z */
-    i32 steps;     /**< Numero step (signed per direzione: >0 positivo, <0 negativo) */
-    u32 freq_hz;   /**< Frequenza STEP in Hz per questo comando */
-} axis_move_t;
-
-/**
  * @brief Profilo traiettoria trapezoidale
  * @details Definisce accelerazione/velocità costante/decelerazione
  */
@@ -226,6 +215,52 @@ typedef struct {
     u32 const_steps;   /**< Step a velocità costante */
     u32 decel_steps;   /**< Step in fase decelerazione */
 } trajectory_profile_t;
+
+/**
+ * @brief Stato movimento real-time con Bresenham 3D incrementale
+ * @details Sostituisce array pre-calcolato axis_move_t[MAX_MOVE_BUFFER].
+ *          Calcola step e velocità on-the-fly durante esecuzione.
+ *
+ * VANTAGGI:
+ * - RAM: ~100 bytes vs 12 KB array statico
+ * - Step simultanei: risolve segmentazione traiettoria
+ * - Velocità dinamica: profilo trapezoidale calcolato real-time
+ * - Movimenti illimitati: nessun limite 1000 step
+ *
+ * ALGORITMO:
+ * 1. Bresenham 3D incrementale (decide quali assi muovere ogni step)
+ * 2. Calcolo percentuale: current_step / total_steps
+ * 3. Velocità trapezoidale: f(percentuale) → Hz
+ */
+typedef struct {
+    /* Punti traiettoria */
+    point3d_t start;        /**< Punto partenza (12 bytes) */
+    point3d_t end;          /**< Punto arrivo (12 bytes) */
+    point3d_t current;      /**< Posizione corrente (12 bytes) */
+
+    /* Delta e direzioni */
+    i32 dx, dy, dz;         /**< Delta assoluti |end - start| (12 bytes) */
+    i32 sx, sy, sz;         /**< Segni direzione: +1, 0, -1 (12 bytes) */
+
+    /* Bresenham 3D stato */
+    i32 err_xy, err_xz;     /**< Errori accumulati Bresenham (8 bytes) */
+    u8 dominant_axis;       /**< Asse dominante: 0=X, 1=Y, 2=Z (1 byte) */
+    u8 _pad1[3];            /**< Padding allineamento (3 bytes) */
+
+    /* Contatori step */
+    u32 total_steps;        /**< Step totali (max delta) (4 bytes) */
+    u32 current_step;       /**< Step corrente [0..total_steps] (4 bytes) */
+
+    /* Profilo velocità trapezoidale */
+    u32 min_freq_hz;        /**< Velocità minima (accel/decel) (4 bytes) */
+    u32 max_freq_hz;        /**< Velocità massima (crociera) (4 bytes) */
+    trajectory_profile_t profile; /**< Profilo precalcolato (16 bytes) */
+
+    /* Flags stato */
+    volatile bool active;   /**< Movimento in esecuzione (1 byte) */
+    volatile bool completed; /**< Movimento completato (1 byte) */
+    u8 _pad2[2];            /**< Padding allineamento (2 bytes) */
+} move_rt_state_t;          /**< TOTALE: ~104 bytes */
 
 
 /* ============================================================================
@@ -405,85 +440,88 @@ int cnc_home(void);
 
 
 /* ============================================================================
- * FUNZIONI PUBBLICHE - BRESENHAM 3D E GENERAZIONE TRAIETTORIE
+ * FUNZIONI PUBBLICHE - MOVIMENTO REAL-TIME
  * ============================================================================
  */
 
 /**
- * @brief Genera traiettoria lineare 3D ottimizzata con algoritmo di Bresenham
- * @details Calcola una sequenza di comandi batch axis_move_t che approssimano
- *          una linea retta da start a end nello spazio 3D.
+ * @brief Inizializza movimento lineare 3D real-time
+ * @details Configura stato movimento con algoritmo Bresenham 3D incrementale.
+ *          Calcola profilo velocità trapezoidale basato su distanza totale.
  *
- *          Algoritmo di Bresenham 3D ottimizzato:
- *          - Raggruppa step consecutivi sullo stesso asse in batch
- *          - Riduce numero comandi del 80-90% rispetto a step-by-step
- *          - Deterministico e senza floating point
- *
- * @param start Punto di partenza (step)
- * @param end Punto di arrivo (step)
- * @param moves Buffer per comandi generati (min MAX_MOVE_BUFFER elementi)
- * @return Numero di comandi generati, 0 se movimento nullo, -1 se errore
- *
- * @note Il buffer moves deve essere allocato dal chiamante (min 1000 elementi)
- * @note I comandi generati hanno freq_hz = 0 (da impostare successivamente)
- */
-int cnc_bresenham_line(point3d_t start, point3d_t end, axis_move_t *moves);
-
-/**
- * @brief Calcola profilo velocità trapezoidale per una traiettoria
- * @details Calcola parametri accelerazione/crociera/decelerazione per
- *          un movimento smooth con profilo trapezoidale.
- *
- * @param total_steps Numero totale step nella traiettoria
- * @param profile Output: profilo calcolato
- *
- * @note Profilo standard: 25% accel + 50% const + 25% decel
- */
-void cnc_calculate_trajectory_profile(u32 total_steps, trajectory_profile_t *profile);
-
-/**
- * @brief Applica profilo velocità trapezoidale ai comandi movimento
- * @details Assegna frequenza STEP ad ogni comando in base alla posizione
- *          nel profilo (accelerazione → velocità costante → decelerazione)
- *
- * @param moves Array comandi da modificare
- * @param move_count Numero comandi nell'array
- * @param min_hz Frequenza minima (partenza/arrivo)
- * @param max_hz Frequenza massima (crociera)
- *
- * @note Modifica il campo freq_hz di ogni axis_move_t
- */
-void cnc_apply_speed_profile(axis_move_t *moves, u32 move_count, u32 min_hz, u32 max_hz);
-
-/**
- * @brief Esegue sequenza di comandi movimento con controllo TIM2
- * @details Esegue fisicamente i comandi axis_move_t generando STEP
- *          sui pin GPIO tramite TIM2 interrupt.
- *
- * @param moves Array comandi da eseguire
- * @param move_count Numero comandi
- * @return 0 se completato con successo, -1 se interrotto (emergenza/timeout)
- *
- * @note Bloccante: attende completamento di tutti i comandi
- * @note Può essere interrotto da emergenza limit switch
- * @note Usa TIM2 per generazione STEP a frequenza programmabile
- */
-int cnc_execute_moves(axis_move_t *moves, u32 move_count);
-
-/**
- * @brief Valida che una sequenza di comandi arrivi correttamente a destinazione
- * @details Simula l'esecuzione dei comandi e verifica che la posizione finale
- *          corrisponda al punto end previsto.
- *
+ * @param state Puntatore a stato movimento da inizializzare
  * @param start Punto di partenza
- * @param end Punto di arrivo atteso
- * @param moves Array comandi da validare
- * @param move_count Numero comandi
- * @return true se valido, false se posizione finale non corrisponde
+ * @param end Punto di arrivo
+ * @param min_hz Velocità minima (accelerazione/decelerazione) in Hz
+ * @param max_hz Velocità massima (crociera) in Hz
  *
- * @note Usata per debug/testing, non necessaria in produzione
+ * @return 0 se OK, -1 se errore (parametri invalidi)
+ *
+ * @note NON avvia esecuzione, solo setup. Usare cnc_move_execute_rt()
+ * @note Richiede solo ~104 bytes RAM (vs 12 KB array statico)
  */
-bool cnc_validate_trajectory(point3d_t start, point3d_t end, axis_move_t *moves, u32 move_count);
+int cnc_move_init_rt(move_rt_state_t *state, point3d_t start, point3d_t end,
+                     u32 min_hz, u32 max_hz);
+
+/**
+ * @brief Calcola step successivo Bresenham 3D
+ * @details Algoritmo incrementale, decide quali assi muovere questo step.
+ *          Supporta step SIMULTANEI multi-asse (risolve segmentazione).
+ *
+ * @param state Puntatore a stato movimento
+ *
+ * @return Maschera assi: bit0=X, bit1=Y, bit2=Z (0x01=solo X, 0x07=tutti)
+ *         0 se movimento completato
+ *
+ * @note Chiamata da TIM2_IRQHandler per ogni step
+ * @note Aggiorna current_step e current position
+ *
+ * @example
+ *   u8 mask = cnc_move_step_rt(&state);
+ *   if (mask & 0x01) muovi_asse_X();
+ *   if (mask & 0x02) muovi_asse_Y();
+ *   if (mask & 0x04) muovi_asse_Z();
+ */
+u8 cnc_move_step_rt(move_rt_state_t *state);
+
+/**
+ * @brief Calcola velocità istantanea basata su percentuale completamento
+ * @details Profilo trapezoidale dinamico:
+ *          - Accelerazione: min_hz → max_hz (fase 1)
+ *          - Crociera: max_hz costante (fase 2)
+ *          - Decelerazione: max_hz → min_hz (fase 3)
+ *
+ * @param state Puntatore a stato movimento (const volatile)
+ *
+ * @return Frequenza step in Hz per posizione corrente
+ *
+ * @note Chiamata da TIM2_IRQHandler per aggiornare TIM2_ARR
+ * @note Calcolo real-time, nessun array pre-calcolato
+ */
+u32 cnc_move_get_speed_rt(const volatile move_rt_state_t *state);
+
+/**
+ * @brief Ottiene percentuale completamento movimento
+ * @param state Puntatore a stato movimento (const volatile)
+ * @return Percentuale 0-100
+ */
+u8 cnc_move_get_percentage_rt(const volatile move_rt_state_t *state);
+
+/**
+ * @brief Esegue movimento real-time (bloccante)
+ * @details Avvia TIM2 ISR per generazione step automatica.
+ *          Attende completamento o emergenza.
+ *
+ * @param state Puntatore a stato movimento (deve essere inizializzato)
+ *
+ * @return 0 se OK, -1 se abort/timeout/emergenza
+ *
+ * @note Funzione bloccante (usa WFI per risparmio energetico)
+ * @note Logga posizione ogni 100 step
+ * @note Interrompibile da emergenza finecorsa
+ */
+int cnc_move_execute_rt(move_rt_state_t *state);
+
 
 /* ============================================================================
  * NOTA: Le seguenti funzioni sono INTERNE e non devono essere chiamate

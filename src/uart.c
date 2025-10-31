@@ -430,10 +430,11 @@ int uart_getchar(char *ch)
 
 /**
  * @brief  Dumpa tutto il buffer circolare di log via UART
+ * @note   Disponibile SOLO se LOG_TO_MEMORY=1
  */
 int log_via_uart(void)
 {
-#if ENABLE_LOG
+#if ENABLE_LOG && LOG_TO_MEMORY
     /* Buffer temporaneo per leggere i messaggi dal log */
     char buffer[LOG_MAX_MESSAGE_SIZE];
 
@@ -483,7 +484,7 @@ int log_via_uart(void)
 
     return sent_count;
 #else
-    uart_write("[LOG] Sistema di logging disabilitato (ENABLE_LOG=0)\r\n");
+    uart_write("[LOG] log_via_uart() disponibile solo con LOG_TO_MEMORY=1\r\n");
     return 0;
 #endif
 }

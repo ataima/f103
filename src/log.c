@@ -43,11 +43,19 @@
 #include "log.h"
 #include "utils.h"
 #include <stdarg.h>
+
+/* Necessario per LOG_DIRECT_UART */
+#if LOG_DIRECT_UART
+#include "uart.h"
+#endif
+
 #if ENABLE_LOG
 
 /* =============================================================================
- * STRUTTURA DEL BUFFER CIRCOLARE
+ * STRUTTURA DEL BUFFER CIRCOLARE (solo LOG_TO_MEMORY)
  * ============================================================================= */
+
+#if LOG_TO_MEMORY
 
 /**
  * @brief Struttura di controllo del buffer circolare
@@ -90,9 +98,6 @@ typedef struct {
 static log_buffer_t log_buffer __attribute__((section(".log_buffer")));
 
 
-void * log_site(void){
-	return &log_buffer;
-}
 
 /* Dimensione effettiva dell'area dati (escludendo la struttura di controllo) */
 #define LOG_DATA_SIZE   (sizeof(log_buffer.data))
@@ -236,6 +241,9 @@ static void log_remove_oldest_message(void)
     log_buffer.control.count--;
 }
 
+#endif /* LOG_TO_MEMORY */
+
+
 /* =============================================================================
  * FUNZIONI PUBBLICHE - IMPLEMENTAZIONE
  * ============================================================================= */
@@ -245,7 +253,10 @@ static void log_remove_oldest_message(void)
  */
 int log_init(void)
 {
-    /* Acquisisce il lock */
+EVAL_LOG_MEMORY(
+    /* MODALITÀ LOG_TO_MEMORY: Inizializza buffer circolare */
+
+    /* Azzera tutto (include lock!) */
 	memset(&log_buffer,0,sizeof(log_buffer_t));
 
     if (!log_lock_acquire())
@@ -269,10 +280,17 @@ int log_init(void)
     log_lock_release();
 
     return LOG_OK;
+)
+EVAL_LOG_UART(
+    /* MODALITÀ LOG_DIRECT_UART: Nessun buffer, solo init UART se necessario */
+
+    /* UART già inizializzata in main.c, niente da fare qui */
+    return LOG_OK;)
+
 }
 
 /**
- * @brief  Scrive un messaggio nel buffer circolare (PUSH)
+ * @brief  Scrive un messaggio (modalità dipende da LOG_TO_MEMORY/LOG_DIRECT_UART)
  */
 int log_write(const char *message)
 {
@@ -281,6 +299,12 @@ int log_write(const char *message)
     {
         return LOG_ERROR_INVALID;
     }
+
+EVAL_LOG_MEMORY(
+    /* ===========================================================================
+     * MODALITÀ LOG_TO_MEMORY: Scrive nel buffer circolare RAM
+     * ===========================================================================
+     */
 
     /* Verifica inizializzazione */
     if (log_buffer.control.initialized == 0)
@@ -360,7 +384,29 @@ int log_write(const char *message)
     log_lock_release();
 
     return return_code;
+)
+EVAL_LOG_UART(
+    /* ===========================================================================
+     * MODALITÀ LOG_DIRECT_UART: Scrive direttamente su UART3 (lento ma real-time)
+     * ===========================================================================
+     */
+
+    /* Scrivi il messaggio via UART (funzione bloccante) */
+    uart_write(message);
+    uart_write("\r\n");  /* Aggiungi newline per terminale */
+
+    return LOG_OK;
+)
+
 }
+
+
+
+/* =============================================================================
+ * FUNZIONI SPECIFICHE PER LOG_TO_MEMORY (buffer circolare)
+ * ============================================================================= */
+
+#if LOG_TO_MEMORY
 
 /**
  * @brief  Legge un messaggio dal buffer circolare (POP)
@@ -481,8 +527,11 @@ void* log_get_buffer_address(void)
     return (void*)&log_buffer;
 }
 
+#endif /* LOG_TO_MEMORY */
+
+
 /* =============================================================================
- * FUNZIONI DI LOGGING CON PREFISSI E FORMATTAZIONE
+ * FUNZIONI DI LOGGING CON PREFISSI E FORMATTAZIONE (comuni a tutte le modalità)
  * ============================================================================= */
 
 /**
@@ -689,4 +738,5 @@ int log_debug(const char *fmt, ...)
  *    - Compressione dei log (es. run-length encoding per messaggi ripetuti)
  *
  * ============================================================================= */
-#endif
+
+#endif /* ENABLE_LOG */
